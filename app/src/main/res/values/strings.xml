@@ -25,4 +25,14 @@
     <string name="route_summary">%1$.1f km · %2$d min · %3$s</string>
     <string name="directions_title">Directions</string>
     <string name="clear_route">Clear</string>
+
+    <string name="drive_start">🚌 Start driving</string>
+    <string name="drive_exit">Exit</string>
+    <string name="drive_arrived">You\'ve arrived!</string>
+    <string name="recalculating">Recalculating route…</string>
+    <string name="remaining">%1$.1f km · %2$d min</string>
+    <string name="dist_m">%1$d m</string>
+    <string name="dist_km">%1$.1f km</string>
+    <string name="fav_saved">Saved to favorites ⭐</string>
+    <string name="fav_removed">Removed from favorites</string>
 </resources>

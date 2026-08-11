@@ -9,12 +9,20 @@ import java.net.URLEncoder
 
 data class GeocodeResult(val displayName: String, val lat: Double, val lon: Double)
 
+data class Maneuver(
+    val instruction: String,
+    val beginIdx: Int, // index into RouteResult.points where this maneuver starts
+    val lengthKm: Double
+)
+
 data class RouteResult(
     val points: List<Pair<Double, Double>>, // lat, lon
     val distanceKm: Double,
     val timeSeconds: Double,
-    val instructions: List<String>
-)
+    val maneuvers: List<Maneuver>
+) {
+    val instructions: List<String> get() = maneuvers.map { it.instruction }
+}
 
 /**
  * Talks to free public services:
@@ -88,15 +96,24 @@ object RouteClient {
         bus: BusType,
         hebrew: Boolean
     ): RouteResult {
+        // The armored bus is heavy enough that weight limits matter, so it uses
+        // the "truck" profile (respects maxweight/bridge limits). Other buses use
+        // the "bus" profile (keeps bus access rights on restricted roads).
+        val costing = if (bus == BusType.ARMORED) "truck" else "bus"
+        val options = JSONObject()
+            .put("height", bus.height)
+            .put("width", bus.width)
+        if (costing == "truck") {
+            options.put("length", bus.length)
+            options.put("weight", bus.weightTons)
+        }
+
         val body = JSONObject()
             .put("locations", JSONArray()
                 .put(JSONObject().put("lat", fromLat).put("lon", fromLon))
                 .put(JSONObject().put("lat", toLat).put("lon", toLon)))
-            .put("costing", "bus")
-            .put("costing_options", JSONObject()
-                .put("bus", JSONObject()
-                    .put("height", bus.height)
-                    .put("width", bus.width)))
+            .put("costing", costing)
+            .put("costing_options", JSONObject().put(costing, options))
             .put("units", "kilometers")
             .put("language", if (hebrew) "he-IL" else "en-US")
             .toString()
@@ -106,11 +123,18 @@ object RouteClient {
         val summary = trip.getJSONObject("summary")
         val leg = trip.getJSONArray("legs").getJSONObject(0)
 
-        val instructions = ArrayList<String>()
-        val maneuvers = leg.optJSONArray("maneuvers")
-        if (maneuvers != null) {
-            for (i in 0 until maneuvers.length()) {
-                instructions.add(maneuvers.getJSONObject(i).optString("instruction"))
+        val maneuvers = ArrayList<Maneuver>()
+        val mans = leg.optJSONArray("maneuvers")
+        if (mans != null) {
+            for (i in 0 until mans.length()) {
+                val m = mans.getJSONObject(i)
+                maneuvers.add(
+                    Maneuver(
+                        instruction = m.optString("instruction"),
+                        beginIdx = m.optInt("begin_shape_index"),
+                        lengthKm = m.optDouble("length", 0.0)
+                    )
+                )
             }
         }
 
@@ -118,7 +142,7 @@ object RouteClient {
             points = decodePolyline6(leg.getString("shape")),
             distanceKm = summary.getDouble("length"),
             timeSeconds = summary.getDouble("time"),
-            instructions = instructions
+            maneuvers = maneuvers
         )
     }
 

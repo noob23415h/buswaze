@@ -2,12 +2,16 @@ package com.buswaze.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.ArrayAdapter
@@ -41,12 +45,15 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import kotlin.math.cos
+import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var mapView: MapView
     private var map: MapLibreMap? = null
 
+    private lateinit var topBar: View
     private lateinit var searchBox: EditText
     private lateinit var busTypeButton: MaterialButton
     private lateinit var languageButton: MaterialButton
@@ -54,8 +61,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var suggestionsList: ListView
     private lateinit var routeCard: View
     private lateinit var routeSummary: TextView
+    private lateinit var driveButton: MaterialButton
     private lateinit var directionsButton: MaterialButton
+    private lateinit var favoriteButton: MaterialButton
     private lateinit var clearRouteButton: MaterialButton
+    private lateinit var driveCard: View
+    private lateinit var driveInstruction: TextView
+    private lateinit var driveDistance: TextView
+    private lateinit var driveBottom: View
+    private lateinit var driveRemaining: TextView
+    private lateinit var exitDriveButton: MaterialButton
 
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
@@ -63,12 +78,19 @@ class MainActivity : AppCompatActivity() {
 
     private var busType = BusType.NORMAL
     private var destination: GeocodeResult? = null
-    private var lastInstructions: List<String> = emptyList()
+    private var routeData: RouteResult? = null
+    private var cumDist: DoubleArray = DoubleArray(0) // meters from start, per point
 
     private var suggestions: List<GeocodeResult> = emptyList()
     private var pendingSuggest: Runnable? = null
     private var suggestSeq = 0
     private var suppressWatcher = false
+
+    private var driveMode = false
+    private var offRouteCount = 0
+    private var rerouting = false
+
+    private val driveListener = LocationListener { loc -> onDriveLocation(loc) }
 
     private val isHebrew: Boolean
         get() {
@@ -87,6 +109,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         mapView = findViewById(R.id.mapView)
+        topBar = findViewById(R.id.topBar)
         searchBox = findViewById(R.id.searchBox)
         busTypeButton = findViewById(R.id.busTypeButton)
         languageButton = findViewById(R.id.languageButton)
@@ -94,8 +117,16 @@ class MainActivity : AppCompatActivity() {
         suggestionsList = findViewById(R.id.suggestionsList)
         routeCard = findViewById(R.id.routeCard)
         routeSummary = findViewById(R.id.routeSummary)
+        driveButton = findViewById(R.id.driveButton)
         directionsButton = findViewById(R.id.directionsButton)
+        favoriteButton = findViewById(R.id.favoriteButton)
         clearRouteButton = findViewById(R.id.clearRouteButton)
+        driveCard = findViewById(R.id.driveCard)
+        driveInstruction = findViewById(R.id.driveInstruction)
+        driveDistance = findViewById(R.id.driveDistance)
+        driveBottom = findViewById(R.id.driveBottom)
+        driveRemaining = findViewById(R.id.driveRemaining)
+        exitDriveButton = findViewById(R.id.exitDriveButton)
 
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { maplibreMap ->
@@ -128,8 +159,11 @@ class MainActivity : AppCompatActivity() {
         languageButton.setOnClickListener { showLanguageDialog() }
 
         setupSearch()
+        driveButton.setOnClickListener { enterDriveMode() }
         directionsButton.setOnClickListener { showDirectionsDialog() }
+        favoriteButton.setOnClickListener { toggleFavorite() }
         clearRouteButton.setOnClickListener { clearRoute() }
+        exitDriveButton.setOnClickListener { exitDriveMode() }
     }
 
     // ---------- Language ----------
@@ -178,7 +212,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    // ---------- Search with live suggestions ----------
+    // ---------- Search, suggestions, saved places ----------
 
     private fun setupSearch() {
         searchBox.addTextChangedListener(object : TextWatcher {
@@ -189,7 +223,7 @@ class MainActivity : AppCompatActivity() {
                 pendingSuggest?.let { handler.removeCallbacks(it) }
                 val text = s?.toString()?.trim() ?: ""
                 if (text.length < 2) {
-                    hideSuggestions()
+                    if (text.isEmpty()) showSavedPlaces() else hideSuggestions()
                     return
                 }
                 val r = Runnable { fetchSuggestions(text, routeOnSingle = false) }
@@ -197,6 +231,13 @@ class MainActivity : AppCompatActivity() {
                 handler.postDelayed(r, 350)
             }
         })
+
+        searchBox.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && searchBox.text.toString().trim().isEmpty()) showSavedPlaces()
+        }
+        searchBox.setOnClickListener {
+            if (searchBox.text.toString().trim().isEmpty()) showSavedPlaces()
+        }
 
         searchBox.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -218,11 +259,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showSavedPlaces() {
+        val prefs = getPreferences(MODE_PRIVATE)
+        val favs = Places.favorites(prefs)
+        val recents = Places.recents(prefs)
+            .filter { r -> favs.none { it.displayName == r.displayName } }
+        val combined = favs + recents
+        if (combined.isEmpty()) {
+            hideSuggestions()
+            return
+        }
+        val labels = favs.map { "⭐ ${it.displayName}" } + recents.map { "🕘 ${it.displayName}" }
+        showSuggestions(combined, labels)
+    }
+
     private fun fetchSuggestions(query: String, routeOnSingle: Boolean) {
         val seq = ++suggestSeq
-        val loc = if (hasLocationPermission())
-            runCatching { map?.locationComponent?.lastKnownLocation }.getOrNull()
-        else null
+        val loc = safeLastLocation()
         val hebrew = isHebrew
         executor.execute {
             val results = try {
@@ -231,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                 null
             }
             runOnUiThread {
-                if (seq != suggestSeq) return@runOnUiThread // stale response
+                if (seq != suggestSeq) return@runOnUiThread
                 when {
                     results == null -> if (routeOnSingle) toast(getString(R.string.network_error))
                     results.isEmpty() -> {
@@ -239,17 +292,16 @@ class MainActivity : AppCompatActivity() {
                         if (routeOnSingle) toast(getString(R.string.no_results))
                     }
                     routeOnSingle -> pickSuggestion(results[0])
-                    else -> showSuggestions(results)
+                    else -> showSuggestions(results, results.map { it.displayName })
                 }
             }
         }
     }
 
-    private fun showSuggestions(results: List<GeocodeResult>) {
+    private fun showSuggestions(results: List<GeocodeResult>, labels: List<String>) {
         suggestions = results
         suggestionsList.adapter = ArrayAdapter(
-            this, android.R.layout.simple_list_item_1,
-            results.map { it.displayName }
+            this, android.R.layout.simple_list_item_1, labels
         )
         suggestionsCard.visibility = View.VISIBLE
     }
@@ -266,22 +318,38 @@ class MainActivity : AppCompatActivity() {
         suppressWatcher = false
         hideSuggestions()
         hideKeyboard()
+        searchBox.clearFocus()
         requestRoute(result)
+    }
+
+    // ---------- Favorites ----------
+
+    private fun toggleFavorite() {
+        val dest = destination ?: return
+        val nowFavorite = Places.toggleFavorite(getPreferences(MODE_PRIVATE), dest)
+        updateFavoriteButton()
+        toast(getString(if (nowFavorite) R.string.fav_saved else R.string.fav_removed))
+    }
+
+    private fun updateFavoriteButton() {
+        val dest = destination
+        val isFav = dest != null && Places.isFavorite(getPreferences(MODE_PRIVATE), dest)
+        favoriteButton.text = if (isFav) "★" else "☆"
     }
 
     // ---------- Routing ----------
 
     private fun requestRoute(dest: GeocodeResult) {
-        val loc = if (hasLocationPermission())
-            runCatching { map?.locationComponent?.lastKnownLocation }.getOrNull()
-        else null
+        val loc = safeLastLocation()
         if (loc == null) {
             toast(getString(R.string.no_location_yet))
             return
         }
         destination = dest
-        toast(getString(R.string.calculating_route))
+        Places.addRecent(getPreferences(MODE_PRIVATE), dest)
+        if (!driveMode) toast(getString(R.string.calculating_route))
         val hebrew = isHebrew
+        rerouting = true
         executor.execute {
             try {
                 val route = RouteClient.route(
@@ -289,15 +357,23 @@ class MainActivity : AppCompatActivity() {
                     dest.lat, dest.lon,
                     busType, hebrew
                 )
-                runOnUiThread { showRoute(route) }
+                runOnUiThread { rerouting = false; showRoute(route) }
             } catch (e: Exception) {
-                runOnUiThread { toast(getString(R.string.route_error)) }
+                runOnUiThread {
+                    rerouting = false
+                    toast(getString(R.string.route_error))
+                    if (driveMode) exitDriveMode()
+                }
             }
         }
     }
 
     private fun showRoute(route: RouteResult) {
         val style = map?.style ?: return
+
+        routeData = route
+        cumDist = buildCumulativeDistances(route.points)
+        offRouteCount = 0
 
         val coords = JSONArray()
         route.points.forEach { (lat, lon) ->
@@ -327,24 +403,30 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        if (driveMode) {
+            // Rerouted while driving: keep following, banner updates on next GPS fix
+            return
+        }
+
         if (route.points.size >= 2) {
             val b = LatLngBounds.Builder()
             route.points.forEach { (lat, lon) -> b.include(LatLng(lat, lon)) }
             map?.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), 100))
         }
 
-        lastInstructions = route.instructions
         val minutes = (route.timeSeconds / 60).toInt()
         routeSummary.text = getString(
             R.string.route_summary,
             route.distanceKm, minutes, "${busType.emoji} ${getString(busType.labelRes)}"
         )
+        updateFavoriteButton()
         routeCard.visibility = View.VISIBLE
     }
 
     private fun clearRoute() {
         destination = null
-        lastInstructions = emptyList()
+        routeData = null
+        cumDist = DoubleArray(0)
         routeCard.visibility = View.GONE
         suppressWatcher = true
         searchBox.text.clear()
@@ -357,8 +439,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDirectionsDialog() {
-        if (lastInstructions.isEmpty()) return
-        val text = lastInstructions
+        val instructions = routeData?.instructions ?: return
+        if (instructions.isEmpty()) return
+        val text = instructions
             .mapIndexed { i, s -> "${i + 1}. $s" }
             .joinToString("\n\n")
         AlertDialog.Builder(this)
@@ -368,12 +451,155 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---------- Drive mode ----------
+
+    @Suppress("MissingPermission")
+    private fun enterDriveMode() {
+        val route = routeData ?: return
+        if (!hasLocationPermission()) {
+            toast(getString(R.string.no_location_yet))
+            return
+        }
+        driveMode = true
+        offRouteCount = 0
+
+        topBar.visibility = View.GONE
+        suggestionsCard.visibility = View.GONE
+        routeCard.visibility = View.GONE
+        driveCard.visibility = View.VISIBLE
+        driveBottom.visibility = View.VISIBLE
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        map?.locationComponent?.let { lc ->
+            runCatching {
+                lc.renderMode = RenderMode.GPS
+                lc.cameraMode = CameraMode.TRACKING_GPS
+                lc.zoomWhileTracking(16.5)
+                lc.tiltWhileTracking(45.0)
+            }
+        }
+
+        // First banner: the first real maneuver (index 0 is "depart")
+        val first = route.maneuvers.getOrNull(1) ?: route.maneuvers.firstOrNull()
+        driveInstruction.text = first?.instruction ?: ""
+        driveDistance.text = ""
+        val minutes = (route.timeSeconds / 60).toInt()
+        driveRemaining.text = getString(R.string.remaining, route.distanceKm, minutes)
+
+        try {
+            val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, driveListener)
+        } catch (e: Exception) {
+            // GPS provider unavailable — banner still shows, camera still follows
+        }
+    }
+
+    private fun exitDriveMode() {
+        driveMode = false
+        runCatching {
+            (getSystemService(LOCATION_SERVICE) as LocationManager)
+                .removeUpdates(driveListener)
+        }
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        driveCard.visibility = View.GONE
+        driveBottom.visibility = View.GONE
+        topBar.visibility = View.VISIBLE
+        if (routeData != null) routeCard.visibility = View.VISIBLE
+        map?.locationComponent?.let { lc ->
+            runCatching {
+                lc.renderMode = RenderMode.COMPASS
+                lc.cameraMode = CameraMode.TRACKING
+            }
+        }
+    }
+
+    private fun onDriveLocation(loc: Location) {
+        if (!driveMode) return
+        val route = routeData ?: return
+        val pts = route.points
+        if (pts.size < 2 || cumDist.size != pts.size) return
+
+        // Nearest route point to current position
+        var bestIdx = 0
+        var bestDist = Double.MAX_VALUE
+        for (i in pts.indices) {
+            val d = fastDistanceMeters(loc.latitude, loc.longitude, pts[i].first, pts[i].second)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+
+        // Off-route detection → automatic reroute
+        if (bestDist > 80) {
+            offRouteCount++
+            if (offRouteCount >= 3 && !rerouting) {
+                offRouteCount = 0
+                toast(getString(R.string.recalculating))
+                destination?.let { requestRoute(it) }
+            }
+            return
+        }
+        offRouteCount = 0
+
+        val totalMeters = cumDist.last()
+        val remainingMeters = totalMeters - cumDist[bestIdx]
+
+        // Arrival
+        if (remainingMeters < 40) {
+            toast(getString(R.string.drive_arrived))
+            exitDriveMode()
+            clearRoute()
+            return
+        }
+
+        // Next maneuver
+        val next = route.maneuvers.firstOrNull { it.beginIdx > bestIdx }
+        if (next != null) {
+            driveInstruction.text = next.instruction
+            val metersToTurn = (cumDist[next.beginIdx] - cumDist[bestIdx]).coerceAtLeast(0.0)
+            driveDistance.text = formatDistance(metersToTurn)
+        }
+
+        val remainingKm = remainingMeters / 1000.0
+        val fraction = if (totalMeters > 0) remainingMeters / totalMeters else 0.0
+        val remainingMin = (route.timeSeconds * fraction / 60).toInt()
+        driveRemaining.text = getString(R.string.remaining, remainingKm, remainingMin)
+    }
+
+    private fun buildCumulativeDistances(pts: List<Pair<Double, Double>>): DoubleArray {
+        val out = DoubleArray(pts.size)
+        for (i in 1 until pts.size) {
+            out[i] = out[i - 1] + fastDistanceMeters(
+                pts[i - 1].first, pts[i - 1].second,
+                pts[i].first, pts[i].second
+            )
+        }
+        return out
+    }
+
+    /** Fast equirectangular approximation — fine for short distances. */
+    private fun fastDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val dLat = (lat2 - lat1) * 110_540.0
+        val dLon = (lon2 - lon1) * 111_320.0 * cos(Math.toRadians(lat1))
+        return sqrt(dLat * dLat + dLon * dLon)
+    }
+
+    private fun formatDistance(meters: Double): String =
+        if (meters < 1000) getString(R.string.dist_m, meters.toInt())
+        else getString(R.string.dist_km, meters / 1000.0)
+
     // ---------- Location ----------
 
     private fun hasLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
+
+    private fun safeLastLocation(): Location? =
+        if (hasLocationPermission())
+            runCatching { map?.locationComponent?.lastKnownLocation }.getOrNull()
+        else null
 
     private fun enableLocationIfPermitted(style: Style) {
         if (hasLocationPermission()) {
@@ -402,19 +628,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun centerOnMe() {
-        val locationComponent = map?.locationComponent
-        if (locationComponent == null || !hasLocationPermission()) {
-            toast(getString(R.string.no_location_yet))
-            return
-        }
-        val last = runCatching { locationComponent.lastKnownLocation }.getOrNull()
+        val last = safeLastLocation()
         if (last != null) {
             map?.animateCamera(
                 CameraUpdateFactory.newLatLngZoom(
                     LatLng(last.latitude, last.longitude), 16.0
                 )
             )
-            locationComponent.cameraMode = CameraMode.TRACKING
+            map?.locationComponent?.let { runCatching { it.cameraMode = CameraMode.TRACKING } }
         } else {
             toast(getString(R.string.no_location_yet))
         }
@@ -456,7 +677,14 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() { mapView.onPause(); super.onPause() }
     override fun onStop() { mapView.onStop(); super.onStop() }
     override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
-    override fun onDestroy() { mapView.onDestroy(); super.onDestroy() }
+    override fun onDestroy() {
+        runCatching {
+            (getSystemService(LOCATION_SERVICE) as LocationManager)
+                .removeUpdates(driveListener)
+        }
+        mapView.onDestroy()
+        super.onDestroy()
+    }
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         mapView.onSaveInstanceState(outState)

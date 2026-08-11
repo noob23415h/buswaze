@@ -25,4 +25,14 @@
     <string name="route_summary">%1$.1f ק״מ · %2$d דק׳ · %3$s</string>
     <string name="directions_title">הוראות נסיעה</string>
     <string name="clear_route">נקה</string>
+
+    <string name="drive_start">🚌 התחל נסיעה</string>
+    <string name="drive_exit">יציאה</string>
+    <string name="drive_arrived">הגעתם ליעד!</string>
+    <string name="recalculating">מחשב מסלול מחדש…</string>
+    <string name="remaining">%1$.1f ק״מ · %2$d דק׳</string>
+    <string name="dist_m">%1$d מ׳</string>
+    <string name="dist_km">%1$.1f ק״מ</string>
+    <string name="fav_saved">נשמר במועדפים ⭐</string>
+    <string name="fav_removed">הוסר מהמועדפים</string>
 </resources>
