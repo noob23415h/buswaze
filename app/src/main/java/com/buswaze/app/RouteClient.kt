@@ -47,23 +47,36 @@ object RouteClient {
         conn.inputStream.bufferedReader().use(BufferedReader::readText).let { return it }
     }
 
-    /** Search for a place in Israel. */
-    fun geocode(query: String, hebrew: Boolean): List<GeocodeResult> {
+    /**
+     * Live search suggestions from Photon (komoot) — built for as-you-type search.
+     * Results limited to Israel's bounding box and biased toward the user's location.
+     */
+    fun suggest(query: String, hebrew: Boolean, lat: Double?, lon: Double?): List<GeocodeResult> {
         val q = URLEncoder.encode(query, "UTF-8")
-        val lang = if (hebrew) "he" else "en"
-        val url = "https://nominatim.openstreetmap.org/search" +
-                "?q=$q&format=json&limit=5&countrycodes=il&accept-language=$lang"
-        val arr = JSONArray(httpGet(url))
+        var url = "https://photon.komoot.io/api/?q=$q&limit=6&bbox=33.8,29.2,36.3,33.6"
+        if (!hebrew) url += "&lang=en" // default (no lang) returns local names = Hebrew
+        if (lat != null && lon != null) url += "&lat=$lat&lon=$lon"
+
+        val feats = JSONObject(httpGet(url)).getJSONArray("features")
         val out = ArrayList<GeocodeResult>()
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            out.add(
-                GeocodeResult(
-                    o.getString("display_name"),
-                    o.getString("lat").toDouble(),
-                    o.getString("lon").toDouble()
-                )
-            )
+        val seen = HashSet<String>()
+        for (i in 0 until feats.length()) {
+            val f = feats.getJSONObject(i)
+            val p = f.getJSONObject("properties")
+            val coords = f.getJSONObject("geometry").getJSONArray("coordinates")
+
+            val name = p.optString("name").ifEmpty {
+                listOf(p.optString("street"), p.optString("housenumber"))
+                    .filter { it.isNotEmpty() }.joinToString(" ")
+            }
+            if (name.isEmpty()) continue
+            val area = listOf(p.optString("city"), p.optString("district"), p.optString("state"))
+                .firstOrNull { it.isNotEmpty() && it != name } ?: ""
+            val label = if (area.isEmpty()) name else "$name — $area"
+
+            if (seen.add(label)) {
+                out.add(GeocodeResult(label, coords.getDouble(1), coords.getDouble(0)))
+            }
         }
         return out
     }

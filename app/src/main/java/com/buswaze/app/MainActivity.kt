@@ -3,16 +3,24 @@ package com.buswaze.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.os.LocaleListCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import org.maplibre.android.MapLibre
@@ -32,7 +40,6 @@ import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.Locale
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
@@ -42,21 +49,30 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var searchBox: EditText
     private lateinit var busTypeButton: MaterialButton
+    private lateinit var languageButton: MaterialButton
+    private lateinit var suggestionsCard: View
+    private lateinit var suggestionsList: ListView
     private lateinit var routeCard: View
     private lateinit var routeSummary: TextView
     private lateinit var directionsButton: MaterialButton
     private lateinit var clearRouteButton: MaterialButton
 
     private val executor = Executors.newSingleThreadExecutor()
+    private val handler = Handler(Looper.getMainLooper())
     private val locationPermissionCode = 1001
 
     private var busType = BusType.NORMAL
     private var destination: GeocodeResult? = null
     private var lastInstructions: List<String> = emptyList()
 
+    private var suggestions: List<GeocodeResult> = emptyList()
+    private var pendingSuggest: Runnable? = null
+    private var suggestSeq = 0
+    private var suppressWatcher = false
+
     private val isHebrew: Boolean
         get() {
-            val lang = Locale.getDefault().language
+            val lang = resources.configuration.locales.get(0).language
             return lang == "he" || lang == "iw"
         }
 
@@ -73,6 +89,9 @@ class MainActivity : AppCompatActivity() {
         mapView = findViewById(R.id.mapView)
         searchBox = findViewById(R.id.searchBox)
         busTypeButton = findViewById(R.id.busTypeButton)
+        languageButton = findViewById(R.id.languageButton)
+        suggestionsCard = findViewById(R.id.suggestionsCard)
+        suggestionsList = findViewById(R.id.suggestionsList)
         routeCard = findViewById(R.id.routeCard)
         routeSummary = findViewById(R.id.routeSummary)
         directionsButton = findViewById(R.id.directionsButton)
@@ -106,16 +125,35 @@ class MainActivity : AppCompatActivity() {
 
         updateBusTypeButton()
         busTypeButton.setOnClickListener { showBusTypeDialog() }
+        languageButton.setOnClickListener { showLanguageDialog() }
 
-        searchBox.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
-                startSearch(searchBox.text.toString().trim())
-                true
-            } else false
-        }
-
+        setupSearch()
         directionsButton.setOnClickListener { showDirectionsDialog() }
         clearRouteButton.setOnClickListener { clearRoute() }
+    }
+
+    // ---------- Language ----------
+
+    private fun showLanguageDialog() {
+        val labels = arrayOf(getString(R.string.lang_auto), "עברית", "English")
+        val currentTags = AppCompatDelegate.getApplicationLocales().toLanguageTags()
+        val checked = when {
+            currentTags.startsWith("he") || currentTags.startsWith("iw") -> 1
+            currentTags.startsWith("en") -> 2
+            else -> 0
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.language_title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                dialog.dismiss()
+                val locales = when (which) {
+                    1 -> LocaleListCompat.forLanguageTags("he")
+                    2 -> LocaleListCompat.forLanguageTags("en")
+                    else -> LocaleListCompat.getEmptyLocaleList()
+                }
+                AppCompatDelegate.setApplicationLocales(locales)
+            }
+            .show()
     }
 
     // ---------- Bus type ----------
@@ -135,40 +173,100 @@ class MainActivity : AppCompatActivity() {
                     .putString("bus_type", busType.name).apply()
                 updateBusTypeButton()
                 dialog.dismiss()
-                // Recompute the active route for the newly selected bus
                 destination?.let { requestRoute(it) }
             }
             .show()
     }
 
-    // ---------- Search ----------
+    // ---------- Search with live suggestions ----------
 
-    private fun startSearch(query: String) {
-        if (query.isEmpty()) return
-        hideKeyboard()
-        toast(getString(R.string.searching))
-        executor.execute {
-            try {
-                val results = RouteClient.geocode(query, isHebrew)
-                runOnUiThread {
-                    when {
-                        results.isEmpty() -> toast(getString(R.string.no_results))
-                        results.size == 1 -> requestRoute(results[0])
-                        else -> showResultsDialog(results)
+    private fun setupSearch() {
+        searchBox.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (suppressWatcher) return
+                pendingSuggest?.let { handler.removeCallbacks(it) }
+                val text = s?.toString()?.trim() ?: ""
+                if (text.length < 2) {
+                    hideSuggestions()
+                    return
+                }
+                val r = Runnable { fetchSuggestions(text, routeOnSingle = false) }
+                pendingSuggest = r
+                handler.postDelayed(r, 350)
+            }
+        })
+
+        searchBox.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                val text = searchBox.text.toString().trim()
+                if (text.isNotEmpty()) {
+                    hideKeyboard()
+                    if (suggestions.isNotEmpty()) {
+                        pickSuggestion(suggestions[0])
+                    } else {
+                        fetchSuggestions(text, routeOnSingle = true)
                     }
                 }
+                true
+            } else false
+        }
+
+        suggestionsList.setOnItemClickListener { _, _, position, _ ->
+            suggestions.getOrNull(position)?.let { pickSuggestion(it) }
+        }
+    }
+
+    private fun fetchSuggestions(query: String, routeOnSingle: Boolean) {
+        val seq = ++suggestSeq
+        val loc = if (hasLocationPermission())
+            runCatching { map?.locationComponent?.lastKnownLocation }.getOrNull()
+        else null
+        val hebrew = isHebrew
+        executor.execute {
+            val results = try {
+                RouteClient.suggest(query, hebrew, loc?.latitude, loc?.longitude)
             } catch (e: Exception) {
-                runOnUiThread { toast(getString(R.string.network_error)) }
+                null
+            }
+            runOnUiThread {
+                if (seq != suggestSeq) return@runOnUiThread // stale response
+                when {
+                    results == null -> if (routeOnSingle) toast(getString(R.string.network_error))
+                    results.isEmpty() -> {
+                        hideSuggestions()
+                        if (routeOnSingle) toast(getString(R.string.no_results))
+                    }
+                    routeOnSingle -> pickSuggestion(results[0])
+                    else -> showSuggestions(results)
+                }
             }
         }
     }
 
-    private fun showResultsDialog(results: List<GeocodeResult>) {
-        val labels = results.map { it.displayName }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(R.string.pick_destination)
-            .setItems(labels) { _, which -> requestRoute(results[which]) }
-            .show()
+    private fun showSuggestions(results: List<GeocodeResult>) {
+        suggestions = results
+        suggestionsList.adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1,
+            results.map { it.displayName }
+        )
+        suggestionsCard.visibility = View.VISIBLE
+    }
+
+    private fun hideSuggestions() {
+        suggestions = emptyList()
+        suggestionsCard.visibility = View.GONE
+    }
+
+    private fun pickSuggestion(result: GeocodeResult) {
+        suppressWatcher = true
+        searchBox.setText(result.displayName)
+        searchBox.setSelection(searchBox.text.length)
+        suppressWatcher = false
+        hideSuggestions()
+        hideKeyboard()
+        requestRoute(result)
     }
 
     // ---------- Routing ----------
@@ -183,12 +281,13 @@ class MainActivity : AppCompatActivity() {
         }
         destination = dest
         toast(getString(R.string.calculating_route))
+        val hebrew = isHebrew
         executor.execute {
             try {
                 val route = RouteClient.route(
                     loc.latitude, loc.longitude,
                     dest.lat, dest.lon,
-                    busType, isHebrew
+                    busType, hebrew
                 )
                 runOnUiThread { showRoute(route) }
             } catch (e: Exception) {
@@ -228,7 +327,6 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // Zoom out to show the whole route
         if (route.points.size >= 2) {
             val b = LatLngBounds.Builder()
             route.points.forEach { (lat, lon) -> b.include(LatLng(lat, lon)) }
@@ -248,7 +346,10 @@ class MainActivity : AppCompatActivity() {
         destination = null
         lastInstructions = emptyList()
         routeCard.visibility = View.GONE
+        suppressWatcher = true
         searchBox.text.clear()
+        suppressWatcher = false
+        hideSuggestions()
         map?.style?.let { style ->
             style.removeLayer(ROUTE_LAYER)
             style.removeSource(ROUTE_SOURCE)

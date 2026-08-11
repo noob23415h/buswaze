@@ -11,6 +11,9 @@
     <string name="pick_destination">בחרו יעד</string>
     <string name="network_error">בעיית רשת — בדקו את החיבור</string>
 
+    <string name="language_title">שפה</string>
+    <string name="lang_auto">אוטומטי (שפת הטלפון)</string>
+
     <string name="choose_bus_type">בחרו את האוטובוס שלכם</string>
     <string name="bus_mini">מיניבוס</string>
     <string name="bus_small">אוטובוס קטן</string>

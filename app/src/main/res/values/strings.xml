@@ -11,6 +11,9 @@
     <string name="pick_destination">Choose destination</string>
     <string name="network_error">Network problem — check your connection</string>
 
+    <string name="language_title">Language</string>
+    <string name="lang_auto">Automatic (phone language)</string>
+
     <string name="choose_bus_type">Choose your bus</string>
     <string name="bus_mini">Minibus</string>
     <string name="bus_small">Small bus</string>
