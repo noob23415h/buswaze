@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple bus icon, centered in the adaptive-icon safe zone -->
+    <group android:translateX="30" android:translateY="30">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M8,38v2c0,1.1 0.9,2 2,2h2c1.1,0 2,-0.9 2,-2v-2h20v2c0,1.1 0.9,2 2,2h2c1.1,0 2,-0.9 2,-2v-2c1.1,0 2,-0.9 2,-2V12c0,-5 -4,-6 -18,-6S6,7 6,12v24c0,1.1 0.9,2 2,2zM13.5,34c-1.38,0 -2.5,-1.12 -2.5,-2.5s1.12,-2.5 2.5,-2.5 2.5,1.12 2.5,2.5 -1.12,2.5 -2.5,2.5zM34.5,34c-1.38,0 -2.5,-1.12 -2.5,-2.5s1.12,-2.5 2.5,-2.5 2.5,1.12 2.5,2.5 -1.12,2.5 -2.5,2.5zM38,25H10V12h28v13z"/>
+    </group>
+</vector>
