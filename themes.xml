@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BusWaze" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/buswaze_primary</item>
+        <item name="android:statusBarColor">@color/buswaze_dark</item>
+    </style>
+</resources>
