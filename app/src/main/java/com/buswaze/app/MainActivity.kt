@@ -12,6 +12,7 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
@@ -45,6 +46,15 @@ class MainActivity : AppCompatActivity() {
                 .target(LatLng(31.8, 35.0))
                 .zoom(7.0)
                 .build()
+
+            // Keep the camera inside Israel (with a small margin)
+            maplibreMap.setLatLngBoundsForCameraTarget(
+                LatLngBounds.Builder()
+                    .include(LatLng(33.6, 36.3)) // north-east
+                    .include(LatLng(29.2, 33.8)) // south-west
+                    .build()
+            )
+            maplibreMap.setMinZoomPreference(6.0)
 
             maplibreMap.setStyle(
                 Style.Builder().fromUri("asset://osm_style.json")

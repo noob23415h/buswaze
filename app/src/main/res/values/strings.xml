@@ -3,4 +3,5 @@
     <string name="app_name">BusWaze</string>
     <string name="center_on_me">Center on my location</string>
     <string name="no_location_yet">Waiting for GPS signal…</string>
+    <string name="osm_credit">© OpenStreetMap</string>
 </resources>

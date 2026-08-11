@@ -7,7 +7,19 @@
     <org.maplibre.android.maps.MapView
         android:id="@+id/mapView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        app:maplibre_uiLogo="false"
+        app:maplibre_uiAttribution="false" />
+
+    <TextView
+        android:id="@+id/osmCredit"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="4dp"
+        android:text="@string/osm_credit"
+        android:textColor="#99000000"
+        android:textSize="10sp" />
 
     <TextView
         android:id="@+id/titleBar"
