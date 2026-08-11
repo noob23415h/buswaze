@@ -4,4 +4,22 @@
     <string name="center_on_me">Center on my location</string>
     <string name="no_location_yet">Waiting for GPS signal…</string>
     <string name="osm_credit">© OpenStreetMap</string>
+
+    <string name="search_hint">Where to? Search a destination…</string>
+    <string name="searching">Searching…</string>
+    <string name="no_results">No results found</string>
+    <string name="pick_destination">Choose destination</string>
+    <string name="network_error">Network problem — check your connection</string>
+
+    <string name="choose_bus_type">Choose your bus</string>
+    <string name="bus_mini">Minibus</string>
+    <string name="bus_small">Small bus</string>
+    <string name="bus_normal">Standard bus</string>
+    <string name="bus_armored">Armored bus</string>
+
+    <string name="calculating_route">Calculating bus route…</string>
+    <string name="route_error">Couldn\'t calculate a route — try again</string>
+    <string name="route_summary">%1$.1f km · %2$d min · %3$s</string>
+    <string name="directions_title">Directions</string>
+    <string name="clear_route">Clear</string>
 </resources>

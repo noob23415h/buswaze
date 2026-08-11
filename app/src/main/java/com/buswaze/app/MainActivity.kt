@@ -3,10 +3,17 @@ package com.buswaze.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
+import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
@@ -19,39 +26,71 @@ import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.Locale
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var mapView: MapView
     private var map: MapLibreMap? = null
 
+    private lateinit var searchBox: EditText
+    private lateinit var busTypeButton: MaterialButton
+    private lateinit var routeCard: View
+    private lateinit var routeSummary: TextView
+    private lateinit var directionsButton: MaterialButton
+    private lateinit var clearRouteButton: MaterialButton
+
+    private val executor = Executors.newSingleThreadExecutor()
     private val locationPermissionCode = 1001
+
+    private var busType = BusType.NORMAL
+    private var destination: GeocodeResult? = null
+    private var lastInstructions: List<String> = emptyList()
+
+    private val isHebrew: Boolean
+        get() {
+            val lang = Locale.getDefault().language
+            return lang == "he" || lang == "iw"
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Must be called before inflating the MapView
         MapLibre.getInstance(this)
-
         setContentView(R.layout.activity_main)
 
-        mapView = findViewById(R.id.mapView)
-        mapView.onCreate(savedInstanceState)
+        busType = BusType.fromName(
+            getPreferences(MODE_PRIVATE).getString("bus_type", null)
+        )
 
+        mapView = findViewById(R.id.mapView)
+        searchBox = findViewById(R.id.searchBox)
+        busTypeButton = findViewById(R.id.busTypeButton)
+        routeCard = findViewById(R.id.routeCard)
+        routeSummary = findViewById(R.id.routeSummary)
+        directionsButton = findViewById(R.id.directionsButton)
+        clearRouteButton = findViewById(R.id.clearRouteButton)
+
+        mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { maplibreMap ->
             map = maplibreMap
 
-            // Start centered on Israel
             maplibreMap.cameraPosition = CameraPosition.Builder()
                 .target(LatLng(31.8, 35.0))
                 .zoom(7.0)
                 .build()
 
-            // Keep the camera inside Israel (with a small margin)
             maplibreMap.setLatLngBoundsForCameraTarget(
                 LatLngBounds.Builder()
-                    .include(LatLng(33.6, 36.3)) // north-east
-                    .include(LatLng(29.2, 33.8)) // south-west
+                    .include(LatLng(33.6, 36.3))
+                    .include(LatLng(29.2, 33.8))
                     .build()
             )
             maplibreMap.setMinZoomPreference(6.0)
@@ -63,10 +102,172 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<FloatingActionButton>(R.id.fabCenter).setOnClickListener {
-            centerOnMe()
+        findViewById<FloatingActionButton>(R.id.fabCenter).setOnClickListener { centerOnMe() }
+
+        updateBusTypeButton()
+        busTypeButton.setOnClickListener { showBusTypeDialog() }
+
+        searchBox.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                startSearch(searchBox.text.toString().trim())
+                true
+            } else false
+        }
+
+        directionsButton.setOnClickListener { showDirectionsDialog() }
+        clearRouteButton.setOnClickListener { clearRoute() }
+    }
+
+    // ---------- Bus type ----------
+
+    private fun updateBusTypeButton() {
+        busTypeButton.text = "${busType.emoji} ${getString(busType.labelRes)}"
+    }
+
+    private fun showBusTypeDialog() {
+        val types = BusType.entries
+        val labels = types.map { "${it.emoji} ${getString(it.labelRes)}" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.choose_bus_type)
+            .setSingleChoiceItems(labels, types.indexOf(busType)) { dialog, which ->
+                busType = types[which]
+                getPreferences(MODE_PRIVATE).edit()
+                    .putString("bus_type", busType.name).apply()
+                updateBusTypeButton()
+                dialog.dismiss()
+                // Recompute the active route for the newly selected bus
+                destination?.let { requestRoute(it) }
+            }
+            .show()
+    }
+
+    // ---------- Search ----------
+
+    private fun startSearch(query: String) {
+        if (query.isEmpty()) return
+        hideKeyboard()
+        toast(getString(R.string.searching))
+        executor.execute {
+            try {
+                val results = RouteClient.geocode(query, isHebrew)
+                runOnUiThread {
+                    when {
+                        results.isEmpty() -> toast(getString(R.string.no_results))
+                        results.size == 1 -> requestRoute(results[0])
+                        else -> showResultsDialog(results)
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { toast(getString(R.string.network_error)) }
+            }
         }
     }
+
+    private fun showResultsDialog(results: List<GeocodeResult>) {
+        val labels = results.map { it.displayName }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pick_destination)
+            .setItems(labels) { _, which -> requestRoute(results[which]) }
+            .show()
+    }
+
+    // ---------- Routing ----------
+
+    private fun requestRoute(dest: GeocodeResult) {
+        val loc = if (hasLocationPermission())
+            runCatching { map?.locationComponent?.lastKnownLocation }.getOrNull()
+        else null
+        if (loc == null) {
+            toast(getString(R.string.no_location_yet))
+            return
+        }
+        destination = dest
+        toast(getString(R.string.calculating_route))
+        executor.execute {
+            try {
+                val route = RouteClient.route(
+                    loc.latitude, loc.longitude,
+                    dest.lat, dest.lon,
+                    busType, isHebrew
+                )
+                runOnUiThread { showRoute(route) }
+            } catch (e: Exception) {
+                runOnUiThread { toast(getString(R.string.route_error)) }
+            }
+        }
+    }
+
+    private fun showRoute(route: RouteResult) {
+        val style = map?.style ?: return
+
+        val coords = JSONArray()
+        route.points.forEach { (lat, lon) ->
+            coords.put(JSONArray().put(lon).put(lat))
+        }
+        val geoJson = JSONObject()
+            .put("type", "Feature")
+            .put("properties", JSONObject())
+            .put("geometry", JSONObject()
+                .put("type", "LineString")
+                .put("coordinates", coords))
+            .toString()
+
+        val existing = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
+        if (existing != null) {
+            existing.setGeoJson(geoJson)
+        } else {
+            style.addSource(GeoJsonSource(ROUTE_SOURCE, geoJson))
+            style.addLayer(
+                LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
+                    PropertyFactory.lineColor("#1565C0"),
+                    PropertyFactory.lineWidth(6f),
+                    PropertyFactory.lineOpacity(0.85f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                )
+            )
+        }
+
+        // Zoom out to show the whole route
+        if (route.points.size >= 2) {
+            val b = LatLngBounds.Builder()
+            route.points.forEach { (lat, lon) -> b.include(LatLng(lat, lon)) }
+            map?.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), 100))
+        }
+
+        lastInstructions = route.instructions
+        val minutes = (route.timeSeconds / 60).toInt()
+        routeSummary.text = getString(
+            R.string.route_summary,
+            route.distanceKm, minutes, "${busType.emoji} ${getString(busType.labelRes)}"
+        )
+        routeCard.visibility = View.VISIBLE
+    }
+
+    private fun clearRoute() {
+        destination = null
+        lastInstructions = emptyList()
+        routeCard.visibility = View.GONE
+        searchBox.text.clear()
+        map?.style?.let { style ->
+            style.removeLayer(ROUTE_LAYER)
+            style.removeSource(ROUTE_SOURCE)
+        }
+    }
+
+    private fun showDirectionsDialog() {
+        if (lastInstructions.isEmpty()) return
+        val text = lastInstructions
+            .mapIndexed { i, s -> "${i + 1}. $s" }
+            .joinToString("\n\n")
+        AlertDialog.Builder(this)
+            .setTitle(R.string.directions_title)
+            .setMessage(text)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    // ---------- Location ----------
 
     private fun hasLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(
@@ -102,10 +303,10 @@ class MainActivity : AppCompatActivity() {
     private fun centerOnMe() {
         val locationComponent = map?.locationComponent
         if (locationComponent == null || !hasLocationPermission()) {
-            Toast.makeText(this, getString(R.string.no_location_yet), Toast.LENGTH_SHORT).show()
+            toast(getString(R.string.no_location_yet))
             return
         }
-        val last = locationComponent.lastKnownLocation
+        val last = runCatching { locationComponent.lastKnownLocation }.getOrNull()
         if (last != null) {
             map?.animateCamera(
                 CameraUpdateFactory.newLatLngZoom(
@@ -114,7 +315,7 @@ class MainActivity : AppCompatActivity() {
             )
             locationComponent.cameraMode = CameraMode.TRACKING
         } else {
-            Toast.makeText(this, getString(R.string.no_location_yet), Toast.LENGTH_SHORT).show()
+            toast(getString(R.string.no_location_yet))
         }
     }
 
@@ -132,7 +333,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // MapView lifecycle
+    // ---------- Helpers ----------
+
+    private fun toast(msg: String) =
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
+    }
+
+    companion object {
+        private const val ROUTE_SOURCE = "route-src"
+        private const val ROUTE_LAYER = "route-layer"
+    }
+
+    // ---------- MapView lifecycle ----------
+
     override fun onStart() { super.onStart(); mapView.onStart() }
     override fun onResume() { super.onResume(); mapView.onResume() }
     override fun onPause() { mapView.onPause(); super.onPause() }

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BusWaze</string>
+    <string name="center_on_me">מרכז אותי במפה</string>
+    <string name="no_location_yet">ממתין לאות GPS…</string>
+    <string name="osm_credit">© OpenStreetMap</string>
+
+    <string name="search_hint">לאן נוסעים? חפשו יעד…</string>
+    <string name="searching">מחפש…</string>
+    <string name="no_results">לא נמצאו תוצאות</string>
+    <string name="pick_destination">בחרו יעד</string>
+    <string name="network_error">בעיית רשת — בדקו את החיבור</string>
+
+    <string name="choose_bus_type">בחרו את האוטובוס שלכם</string>
+    <string name="bus_mini">מיניבוס</string>
+    <string name="bus_small">אוטובוס קטן</string>
+    <string name="bus_normal">אוטובוס רגיל</string>
+    <string name="bus_armored">אוטובוס ממוגן</string>
+
+    <string name="calculating_route">מחשב מסלול לאוטובוס…</string>
+    <string name="route_error">לא הצלחנו לחשב מסלול — נסו שוב</string>
+    <string name="route_summary">%1$.1f ק״מ · %2$d דק׳ · %3$s</string>
+    <string name="directions_title">הוראות נסיעה</string>
+    <string name="clear_route">נקה</string>
+</resources>
