@@ -55,4 +55,12 @@
     <string name="at_km">בק״מ %1$d</string>
     <string name="fuel_station">תחנת דלק</string>
     <string name="rest_area">חניון רענון</string>
+
+    <string name="add_note_title">נקודת ציון חדשה 📍</string>
+    <string name="note_name_hint">למשל: כניסה אחורית לחניון</string>
+    <string name="note_added">נשמר 📍 (מופיע בלחיצה על שורת החיפוש)</string>
+    <string name="search_save">שמור</string>
+    <string name="delete_place">למחוק את "%1$s"?</string>
+    <string name="delete">מחק</string>
+    <string name="speed_kmh">%1$d קמ״ש</string>
 </resources>

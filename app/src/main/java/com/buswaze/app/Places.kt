@@ -9,6 +9,7 @@ object Places {
 
     private const val KEY_FAVORITES = "favorites"
     private const val KEY_RECENTS = "recents"
+    private const val KEY_NOTES = "map_notes"
     private const val MAX_RECENTS = 10
 
     private fun load(prefs: SharedPreferences, key: String): MutableList<GeocodeResult> {
@@ -68,6 +69,35 @@ object Places {
         recents.removeAll { it.displayName == place.displayName }
         recents.add(0, place)
         while (recents.size > MAX_RECENTS) recents.removeAt(recents.size - 1)
+        save(prefs, KEY_RECENTS, recents)
+    }
+
+    // ---------- Map notes (depots, tricky spots, custom markers) ----------
+
+    fun notes(prefs: SharedPreferences): List<GeocodeResult> = load(prefs, KEY_NOTES)
+
+    fun addNote(prefs: SharedPreferences, place: GeocodeResult) {
+        val notes = load(prefs, KEY_NOTES)
+        notes.removeAll { it.displayName == place.displayName }
+        notes.add(0, place)
+        save(prefs, KEY_NOTES, notes)
+    }
+
+    fun removeNote(prefs: SharedPreferences, label: String) {
+        val notes = load(prefs, KEY_NOTES)
+        notes.removeAll { it.displayName == label }
+        save(prefs, KEY_NOTES, notes)
+    }
+
+    fun removeFavorite(prefs: SharedPreferences, label: String) {
+        val favs = load(prefs, KEY_FAVORITES)
+        favs.removeAll { it.displayName == label }
+        save(prefs, KEY_FAVORITES, favs)
+    }
+
+    fun removeRecent(prefs: SharedPreferences, label: String) {
+        val recents = load(prefs, KEY_RECENTS)
+        recents.removeAll { it.displayName == label }
         save(prefs, KEY_RECENTS, recents)
     }
 }

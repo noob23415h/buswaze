@@ -55,4 +55,12 @@
     <string name="at_km">at km %1$d</string>
     <string name="fuel_station">Fuel station</string>
     <string name="rest_area">Rest area</string>
+
+    <string name="add_note_title">New map note 📍</string>
+    <string name="note_name_hint">e.g. depot back entrance</string>
+    <string name="note_added">Saved 📍 (find it via the search bar)</string>
+    <string name="search_save">Save</string>
+    <string name="delete_place">Delete "%1$s"?</string>
+    <string name="delete">Delete</string>
+    <string name="speed_kmh">%1$d km/h</string>
 </resources>

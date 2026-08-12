@@ -90,6 +90,8 @@ class MainActivity : AppCompatActivity() {
     private var cumDist: DoubleArray = DoubleArray(0) // meters from start, per point
 
     private var suggestions: List<GeocodeResult> = emptyList()
+    private var savedKinds: List<Char> = emptyList()
+    private var savedShowing = false
     private var pendingSuggest: Runnable? = null
     private var suggestSeq = 0
     private var suppressWatcher = false
@@ -185,6 +187,12 @@ class MainActivity : AppCompatActivity() {
                 Style.Builder().fromUri("asset://osm_style.json")
             ) { style ->
                 enableLocationIfPermitted(style)
+                drawNotes()
+            }
+
+            maplibreMap.addOnMapLongClickListener { point ->
+                promptAddNote(point)
+                true
             }
         }
 
@@ -295,20 +303,53 @@ class MainActivity : AppCompatActivity() {
         suggestionsList.setOnItemClickListener { _, _, position, _ ->
             suggestions.getOrNull(position)?.let { pickSuggestion(it) }
         }
+        suggestionsList.setOnItemLongClickListener { _, _, position, _ ->
+            if (savedShowing) {
+                deleteSavedPlace(position)
+                true
+            } else false
+        }
     }
 
     private fun showSavedPlaces() {
         val prefs = getPreferences(MODE_PRIVATE)
         val favs = Places.favorites(prefs)
+        val notes = Places.notes(prefs)
         val recents = Places.recents(prefs)
             .filter { r -> favs.none { it.displayName == r.displayName } }
-        val combined = favs + recents
+            .filter { r -> notes.none { it.displayName == r.displayName } }
+        val combined = favs + notes + recents
         if (combined.isEmpty()) {
             hideSuggestions()
             return
         }
-        val labels = favs.map { "⭐ ${it.displayName}" } + recents.map { "🕘 ${it.displayName}" }
+        savedKinds = List(favs.size) { 'F' } + List(notes.size) { 'N' } + List(recents.size) { 'R' }
+        savedShowing = true
+        val labels = favs.map { "⭐ ${it.displayName}" } +
+                notes.map { "📍 ${it.displayName}" } +
+                recents.map { "🕘 ${it.displayName}" }
         showSuggestions(combined, labels)
+    }
+
+    private fun deleteSavedPlace(index: Int) {
+        val place = suggestions.getOrNull(index) ?: return
+        val kind = savedKinds.getOrNull(index) ?: return
+        AlertDialog.Builder(this)
+            .setMessage(getString(R.string.delete_place, place.displayName))
+            .setPositiveButton(R.string.delete) { _, _ ->
+                val prefs = getPreferences(MODE_PRIVATE)
+                when (kind) {
+                    'F' -> Places.removeFavorite(prefs, place.displayName)
+                    'N' -> {
+                        Places.removeNote(prefs, place.displayName)
+                        drawNotes()
+                    }
+                    'R' -> Places.removeRecent(prefs, place.displayName)
+                }
+                showSavedPlaces()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun fetchSuggestions(query: String, routeOnSingle: Boolean) {
@@ -338,6 +379,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSuggestions(results: List<GeocodeResult>, labels: List<String>) {
         suggestions = results
+        if (labels.firstOrNull()?.startsWith("⭐") != true &&
+            labels.firstOrNull()?.startsWith("📍") != true &&
+            labels.firstOrNull()?.startsWith("🕘") != true
+        ) {
+            savedShowing = false
+        }
         suggestionsList.adapter = ArrayAdapter(
             this, android.R.layout.simple_list_item_1, labels
         )
@@ -626,7 +673,10 @@ class MainActivity : AppCompatActivity() {
         val remainingKm = remainingMeters / 1000.0
         val fraction = if (totalMeters > 0) remainingMeters / totalMeters else 0.0
         val remainingMin = (route.timeSeconds * fraction / 60).toInt()
-        driveRemaining.text = getString(R.string.remaining, remainingKm, remainingMin)
+        val speedKmh = (loc.speed * 3.6).toInt()
+        driveRemaining.text =
+            getString(R.string.speed_kmh, speedKmh) + " · " +
+                    getString(R.string.remaining, remainingKm, remainingMin)
     }
 
     // ---------- Company & line ----------
@@ -947,6 +997,66 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---------- Map notes (long-press) ----------
+
+    private fun promptAddNote(point: LatLng) {
+        val input = EditText(this)
+        input.hint = getString(R.string.note_name_hint)
+        input.maxLines = 1
+        AlertDialog.Builder(this)
+            .setTitle(R.string.add_note_title)
+            .setView(input)
+            .setPositiveButton(R.string.search_save) { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    Places.addNote(
+                        getPreferences(MODE_PRIVATE),
+                        GeocodeResult(name, point.latitude, point.longitude)
+                    )
+                    drawNotes()
+                    toast(getString(R.string.note_added))
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun drawNotes() {
+        val style = map?.style ?: return
+        val notes = Places.notes(getPreferences(MODE_PRIVATE))
+
+        val features = JSONArray()
+        notes.forEach {
+            features.put(
+                JSONObject()
+                    .put("type", "Feature")
+                    .put("properties", JSONObject())
+                    .put("geometry", JSONObject()
+                        .put("type", "Point")
+                        .put("coordinates", JSONArray().put(it.lon).put(it.lat)))
+            )
+        }
+        val json = JSONObject()
+            .put("type", "FeatureCollection")
+            .put("features", features)
+            .toString()
+
+        val existing = style.getSourceAs<GeoJsonSource>(NOTES_SOURCE)
+        if (existing != null) {
+            existing.setGeoJson(json)
+        } else {
+            style.addSource(GeoJsonSource(NOTES_SOURCE, json))
+            style.addLayer(
+                CircleLayer(NOTES_LAYER, NOTES_SOURCE).withProperties(
+                    PropertyFactory.circleRadius(7f),
+                    PropertyFactory.circleColor("#00897B"),
+                    PropertyFactory.circleStrokeColor("#FFFFFF"),
+                    PropertyFactory.circleStrokeWidth(2f)
+                )
+            )
+        }
+    }
+
     // ---------- Rest stops (coffee!) ----------
 
     private fun findRestStops() {
@@ -1192,6 +1302,8 @@ class MainActivity : AppCompatActivity() {
         private const val STOPS_LAYER = "stops-layer"
         private const val REST_SOURCE = "rest-src"
         private const val REST_LAYER = "rest-layer"
+        private const val NOTES_SOURCE = "notes-src"
+        private const val NOTES_LAYER = "notes-layer"
     }
 
     // ---------- MapView lifecycle ----------
