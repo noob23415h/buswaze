@@ -175,13 +175,14 @@ class MainActivity : AppCompatActivity() {
                 .zoom(7.0)
                 .build()
 
+            // Tight fit around Israel: Metula to Eilat, coast to the Golan
             maplibreMap.setLatLngBoundsForCameraTarget(
                 LatLngBounds.Builder()
-                    .include(LatLng(33.6, 36.3))
-                    .include(LatLng(29.2, 33.8))
+                    .include(LatLng(33.4, 35.95))
+                    .include(LatLng(29.4, 34.2))
                     .build()
             )
-            maplibreMap.setMinZoomPreference(6.0)
+            maplibreMap.setMinZoomPreference(6.5)
 
             maplibreMap.setStyle(
                 Style.Builder().fromUri("asset://osm_style.json")
