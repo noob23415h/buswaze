@@ -63,4 +63,7 @@
     <string name="delete_place">למחוק את "%1$s"?</string>
     <string name="delete">מחק</string>
     <string name="speed_kmh">%1$d קמ״ש</string>
+    <string name="lock_center">נעול על המיקום שלך</string>
+    <string name="lock_heading">נעול על כיוון הנסיעה</string>
+    <string name="lock_free">המפה שוחררה</string>
 </resources>

@@ -63,4 +63,7 @@
     <string name="delete_place">Delete "%1$s"?</string>
     <string name="delete">Delete</string>
     <string name="speed_kmh">%1$d km/h</string>
+    <string name="lock_center">Locked on your location</string>
+    <string name="lock_heading">Locked on driving direction</string>
+    <string name="lock_free">Map released</string>
 </resources>

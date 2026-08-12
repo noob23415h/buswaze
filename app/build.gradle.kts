@@ -11,8 +11,8 @@ android {
         applicationId = "com.buswaze.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.6.1"
+        versionCode = 11
+        versionName = "0.6.2"
 
         ndk {
             // Phones only use ARM — dropping x86/x86_64 roughly halves the APK size

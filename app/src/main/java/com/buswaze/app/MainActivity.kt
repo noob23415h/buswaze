@@ -2,6 +2,8 @@ package com.buswaze.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -34,6 +36,7 @@ import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.OnCameraTrackingChangedListener
 import org.maplibre.android.location.engine.LocationEngineRequest
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
@@ -79,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var driveRemaining: TextView
     private lateinit var muteButton: MaterialButton
     private lateinit var exitDriveButton: MaterialButton
+    private lateinit var fabCenter: FloatingActionButton
 
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
@@ -105,6 +109,10 @@ class MainActivity : AppCompatActivity() {
     private var voiceMuted = false
     private var announcedManeuverIdx = -1
     private var announcedStage = 0
+
+    // Location lock: 0 = free, 1 = locked on location, 2 = locked on heading
+    private var lockState = 0
+    private var relockRunnable: Runnable? = null
 
     private var activeLine: BusLine? = null
     private var activeStops: List<LineStop> = emptyList()
@@ -197,7 +205,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<FloatingActionButton>(R.id.fabCenter).setOnClickListener { centerOnMe() }
+        fabCenter = findViewById(R.id.fabCenter)
+        fabCenter.setOnClickListener { cycleLock() }
 
         updateBusTypeButton()
         busTypeButton.setOnClickListener { showBusTypeDialog() }
@@ -599,12 +608,8 @@ class MainActivity : AppCompatActivity() {
         driveBottom.visibility = View.GONE
         topBar.visibility = View.VISIBLE
         if (routeData != null) routeCard.visibility = View.VISIBLE
-        map?.locationComponent?.let { lc ->
-            runCatching {
-                lc.renderMode = RenderMode.COMPASS
-                lc.cameraMode = CameraMode.TRACKING
-            }
-        }
+        lockState = 1
+        applyLockState()
     }
 
     private fun onDriveLocation(loc: Location) {
@@ -1254,20 +1259,100 @@ class MainActivity : AppCompatActivity() {
         locationComponent.isLocationComponentEnabled = true
         locationComponent.cameraMode = CameraMode.TRACKING
         locationComponent.renderMode = RenderMode.COMPASS
+        lockState = 1
+        updateFabTint()
+
+        // If the user pans the map while locked, glide back after a moment
+        locationComponent.addOnCameraTrackingChangedListener(
+            object : OnCameraTrackingChangedListener {
+                override fun onCameraTrackingChanged(currentMode: Int) {}
+                override fun onCameraTrackingDismissed() {
+                    if (driveMode || lockState != 0) scheduleRelock()
+                }
+            }
+        )
     }
 
-    private fun centerOnMe() {
-        val last = safeLastLocation()
-        if (last != null) {
-            map?.animateCamera(
-                CameraUpdateFactory.newLatLngZoom(
-                    LatLng(last.latitude, last.longitude), 16.0
-                )
-            )
-            map?.locationComponent?.let { runCatching { it.cameraMode = CameraMode.TRACKING } }
-        } else {
-            toast(getString(R.string.no_location_yet))
+    // ---------- Location lock button ----------
+
+    private fun cycleLock() {
+        if (driveMode) {
+            runCatching { map?.locationComponent?.cameraMode = CameraMode.TRACKING_GPS }
+            return
         }
+        val lc = map?.locationComponent
+        if (lc == null || !hasLocationPermission() || safeLastLocation() == null) {
+            toast(getString(R.string.no_location_yet))
+            return
+        }
+        lockState = (lockState + 1) % 3
+        applyLockState()
+        toast(
+            getString(
+                when (lockState) {
+                    1 -> R.string.lock_center
+                    2 -> R.string.lock_heading
+                    else -> R.string.lock_free
+                }
+            )
+        )
+    }
+
+    private fun applyLockState() {
+        val lc = map?.locationComponent ?: return
+        runCatching {
+            when (lockState) {
+                1 -> {
+                    lc.renderMode = RenderMode.COMPASS
+                    lc.cameraMode = CameraMode.TRACKING
+                    lc.zoomWhileTracking(16.0)
+                }
+                2 -> {
+                    lc.renderMode = RenderMode.GPS
+                    lc.cameraMode = CameraMode.TRACKING_GPS
+                    lc.zoomWhileTracking(17.0)
+                    lc.tiltWhileTracking(30.0)
+                }
+                else -> {
+                    lc.cameraMode = CameraMode.NONE
+                    lc.renderMode = RenderMode.COMPASS
+                    // back to north-up, flat view
+                    map?.let { m ->
+                        m.animateCamera(
+                            CameraUpdateFactory.newCameraPosition(
+                                CameraPosition.Builder(m.cameraPosition)
+                                    .bearing(0.0)
+                                    .tilt(0.0)
+                                    .build()
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        updateFabTint()
+    }
+
+    private fun updateFabTint() {
+        val color = when (lockState) {
+            1 -> "#00897B" // locked on location
+            2 -> "#FF8F00" // locked on heading
+            else -> "#1565C0" // free
+        }
+        fabCenter.backgroundTintList = ColorStateList.valueOf(Color.parseColor(color))
+    }
+
+    private fun scheduleRelock() {
+        relockRunnable?.let { handler.removeCallbacks(it) }
+        val r = Runnable {
+            if (driveMode) {
+                runCatching { map?.locationComponent?.cameraMode = CameraMode.TRACKING_GPS }
+            } else if (lockState != 0) {
+                applyLockState()
+            }
+        }
+        relockRunnable = r
+        handler.postDelayed(r, 1500)
     }
 
     override fun onRequestPermissionsResult(
