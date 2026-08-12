@@ -87,6 +87,20 @@
                 android:textSize="13sp"
                 android:text="@string/bus_normal" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/lineButton"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:minHeight="40dp"
+                android:minWidth="48dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:textSize="13sp"
+                android:contentDescription="@string/line_menu_title"
+                android:text="🚏" />
+
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"
@@ -164,6 +178,16 @@
                     android:layout_weight="1"
                     android:layout_marginEnd="8dp"
                     android:text="@string/directions_title" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/restButton"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="48dp"
+                    android:textSize="18sp"
+                    android:contentDescription="@string/rest_title"
+                    android:text="☕" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/favoriteButton"
@@ -250,6 +274,16 @@
                 android:textColor="@android:color/white"
                 android:textSize="16sp"
                 android:textStyle="bold" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/muteButton"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="48dp"
+                android:textSize="18sp"
+                android:contentDescription="@string/drive_exit"
+                android:text="🔊" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/exitDriveButton"

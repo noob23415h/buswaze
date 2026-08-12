@@ -35,4 +35,23 @@
     <string name="dist_km">%1$.1f km</string>
     <string name="fav_saved">Saved to favorites ⭐</string>
     <string name="fav_removed">Removed from favorites</string>
+
+    <string name="line_menu_title">Bus line</string>
+    <string name="line_stops_item">Line stops</string>
+    <string name="line_new_search">Find another line</string>
+    <string name="line_clear">Clear line</string>
+    <string name="choose_company">Choose company</string>
+    <string name="all_companies">All companies</string>
+    <string name="line_number_title">Line number</string>
+    <string name="search">Search</string>
+    <string name="loading_line">Loading line…</string>
+    <string name="no_lines_found">Line not found for today</string>
+    <string name="stops_loaded">Loaded %1$d stops</string>
+
+    <string name="rest_search">Looking for rest stops along the route…</string>
+    <string name="rest_none">No rest stops found along the route</string>
+    <string name="rest_title">Rest stops on the way</string>
+    <string name="at_km">at km %1$d</string>
+    <string name="fuel_station">Fuel station</string>
+    <string name="rest_area">Rest area</string>
 </resources>

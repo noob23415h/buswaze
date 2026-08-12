@@ -9,10 +9,36 @@ import java.net.URLEncoder
 
 data class GeocodeResult(val displayName: String, val lat: Double, val lon: Double)
 
+data class BusLine(
+    val routeId: Long,
+    val shortName: String,
+    val agency: String,
+    val longName: String,
+    val direction: String
+)
+
+data class LineStop(
+    val name: String,
+    val city: String,
+    val lat: Double,
+    val lon: Double,
+    val sequence: Int
+)
+
+data class RestStop(
+    val name: String,
+    val lat: Double,
+    val lon: Double,
+    val isFuel: Boolean
+)
+
 data class Maneuver(
     val instruction: String,
     val beginIdx: Int, // index into RouteResult.points where this maneuver starts
-    val lengthKm: Double
+    val lengthKm: Double,
+    val type: Int,
+    val street: String?,
+    val roundaboutExit: Int
 )
 
 data class RouteResult(
@@ -43,12 +69,16 @@ object RouteClient {
         conn.inputStream.bufferedReader().use(BufferedReader::readText).let { return it }
     }
 
-    private fun httpPost(urlStr: String, body: String): String {
+    private fun httpPost(
+        urlStr: String,
+        body: String,
+        contentType: String = "application/json"
+    ): String {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.setRequestProperty("User-Agent", USER_AGENT)
-        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Content-Type", contentType)
         conn.connectTimeout = 15000
         conn.readTimeout = 30000
         conn.outputStream.use { it.write(body.toByteArray()) }
@@ -132,7 +162,11 @@ object RouteClient {
                     Maneuver(
                         instruction = m.optString("instruction"),
                         beginIdx = m.optInt("begin_shape_index"),
-                        lengthKm = m.optDouble("length", 0.0)
+                        lengthKm = m.optDouble("length", 0.0),
+                        type = m.optInt("type"),
+                        street = m.optJSONArray("street_names")?.optString(0)
+                            ?.takeIf { it.isNotEmpty() },
+                        roundaboutExit = m.optInt("roundabout_exit_count", 0)
                     )
                 )
             }
@@ -144,6 +178,98 @@ object RouteClient {
             timeSeconds = summary.getDouble("time"),
             maneuvers = maneuvers
         )
+    }
+
+    // ---------- Israel bus lines (open-bus stride API, MOT open data) ----------
+
+    private const val STRIDE = "https://open-bus-stride-api.hasadna.org.il"
+
+    /** All route variants matching a line number today (all companies). */
+    fun busLines(lineNumber: String, date: String): List<BusLine> {
+        val q = URLEncoder.encode(lineNumber, "UTF-8")
+        val url = "$STRIDE/gtfs_routes/list?limit=30&date_from=$date&date_to=$date&route_short_name=$q"
+        val arr = JSONArray(httpGet(url))
+        val out = ArrayList<BusLine>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            out.add(
+                BusLine(
+                    routeId = o.getLong("id"),
+                    shortName = o.optString("route_short_name"),
+                    agency = o.optString("agency_name"),
+                    longName = o.optString("route_long_name"),
+                    direction = o.optString("route_direction")
+                )
+            )
+        }
+        return out
+    }
+
+    /** Ordered stops of a line variant (via one of today's rides). */
+    fun lineStops(routeId: Long): List<LineStop> {
+        val rides = JSONArray(httpGet("$STRIDE/gtfs_rides/list?limit=1&gtfs_route_id=$routeId"))
+        if (rides.length() == 0) return emptyList()
+        val rideId = rides.getJSONObject(0).getLong("id")
+
+        val arr = JSONArray(httpGet("$STRIDE/gtfs_ride_stops/list?limit=500&gtfs_ride_ids=$rideId"))
+        val out = ArrayList<LineStop>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val lat = o.optDouble("gtfs_stop__lat")
+            val lon = o.optDouble("gtfs_stop__lon")
+            if (lat.isNaN() || lon.isNaN()) continue
+            out.add(
+                LineStop(
+                    name = o.optString("gtfs_stop__name"),
+                    city = o.optString("gtfs_stop__city"),
+                    lat = lat,
+                    lon = lon,
+                    sequence = o.optInt("stop_sequence")
+                )
+            )
+        }
+        return out.sortedBy { it.sequence }
+    }
+
+    // ---------- Rest stops along the way (OpenStreetMap / Overpass) ----------
+
+    /** Fuel stations and rest areas inside a bounding box. */
+    fun restStops(
+        minLat: Double, minLon: Double,
+        maxLat: Double, maxLon: Double
+    ): List<RestStop> {
+        val bbox = "$minLat,$minLon,$maxLat,$maxLon"
+        val query = "[out:json][timeout:20];(" +
+                "node[\"amenity\"=\"fuel\"]($bbox);" +
+                "node[\"highway\"=\"rest_area\"]($bbox);" +
+                "node[\"highway\"=\"services\"]($bbox);" +
+                ");out 300;"
+        val resp = httpPost(
+            "https://overpass-api.de/api/interpreter",
+            "data=" + URLEncoder.encode(query, "UTF-8"),
+            contentType = "application/x-www-form-urlencoded"
+        )
+        val elements = JSONObject(resp).getJSONArray("elements")
+        val out = ArrayList<RestStop>()
+        for (i in 0 until elements.length()) {
+            val e = elements.getJSONObject(i)
+            val tags = e.optJSONObject("tags") ?: JSONObject()
+            val isFuel = tags.optString("amenity") == "fuel"
+            val name = tags.optString("name").ifEmpty {
+                tags.optString("brand").ifEmpty {
+                    tags.optString("operator")
+                }
+            }
+            out.add(
+                RestStop(
+                    name = name,
+                    lat = e.getDouble("lat"),
+                    lon = e.getDouble("lon"),
+                    isFuel = isFuel
+                )
+            )
+        }
+        return out
     }
 
     /** Valhalla returns shapes as a polyline encoded with 1e6 precision. */

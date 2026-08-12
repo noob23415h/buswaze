@@ -8,6 +8,7 @@ import android.location.LocationManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
@@ -33,17 +34,21 @@ import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.engine.LocationEngineRequest
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalDate
+import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.cos
 import kotlin.math.sqrt
@@ -56,7 +61,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var topBar: View
     private lateinit var searchBox: EditText
     private lateinit var busTypeButton: MaterialButton
+    private lateinit var lineButton: MaterialButton
     private lateinit var languageButton: MaterialButton
+    private lateinit var restButton: MaterialButton
     private lateinit var suggestionsCard: View
     private lateinit var suggestionsList: ListView
     private lateinit var routeCard: View
@@ -70,6 +77,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var driveDistance: TextView
     private lateinit var driveBottom: View
     private lateinit var driveRemaining: TextView
+    private lateinit var muteButton: MaterialButton
     private lateinit var exitDriveButton: MaterialButton
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -89,6 +97,21 @@ class MainActivity : AppCompatActivity() {
     private var driveMode = false
     private var offRouteCount = 0
     private var rerouting = false
+
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var voiceMuted = false
+    private var announcedManeuverIdx = -1
+    private var announcedStage = 0
+
+    private var activeLine: BusLine? = null
+    private var activeStops: List<LineStop> = emptyList()
+
+    private val companies = listOf(
+        "אגד", "אגד תעבורה", "דן", "קווים", "מטרופולין", "סופרבוס",
+        "אפיקים", "אלקטרה אפיקים", "נתיב אקספרס", "תנופה", "מטרודן",
+        "גלים", "דן צפון", "דן דרום", "דן באר שבע"
+    )
 
     private val driveListener = LocationListener { loc -> onDriveLocation(loc) }
 
@@ -112,7 +135,9 @@ class MainActivity : AppCompatActivity() {
         topBar = findViewById(R.id.topBar)
         searchBox = findViewById(R.id.searchBox)
         busTypeButton = findViewById(R.id.busTypeButton)
+        lineButton = findViewById(R.id.lineButton)
         languageButton = findViewById(R.id.languageButton)
+        restButton = findViewById(R.id.restButton)
         suggestionsCard = findViewById(R.id.suggestionsCard)
         suggestionsList = findViewById(R.id.suggestionsList)
         routeCard = findViewById(R.id.routeCard)
@@ -126,7 +151,17 @@ class MainActivity : AppCompatActivity() {
         driveDistance = findViewById(R.id.driveDistance)
         driveBottom = findViewById(R.id.driveBottom)
         driveRemaining = findViewById(R.id.driveRemaining)
+        muteButton = findViewById(R.id.muteButton)
         exitDriveButton = findViewById(R.id.exitDriveButton)
+
+        voiceMuted = getPreferences(MODE_PRIVATE).getBoolean("voice_muted", false)
+        updateMuteButton()
+        muteButton.setOnClickListener {
+            voiceMuted = !voiceMuted
+            getPreferences(MODE_PRIVATE).edit().putBoolean("voice_muted", voiceMuted).apply()
+            updateMuteButton()
+            if (voiceMuted) tts?.stop()
+        }
 
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { maplibreMap ->
@@ -156,7 +191,9 @@ class MainActivity : AppCompatActivity() {
 
         updateBusTypeButton()
         busTypeButton.setOnClickListener { showBusTypeDialog() }
+        lineButton.setOnClickListener { onLineButton() }
         languageButton.setOnClickListener { showLanguageDialog() }
+        restButton.setOnClickListener { findRestStops() }
 
         setupSearch()
         driveButton.setOnClickListener { enterDriveMode() }
@@ -435,14 +472,17 @@ class MainActivity : AppCompatActivity() {
         map?.style?.let { style ->
             style.removeLayer(ROUTE_LAYER)
             style.removeSource(ROUTE_SOURCE)
+            style.removeLayer(REST_LAYER)
+            style.removeSource(REST_SOURCE)
         }
     }
 
     private fun showDirectionsDialog() {
-        val instructions = routeData?.instructions ?: return
-        if (instructions.isEmpty()) return
-        val text = instructions
-            .mapIndexed { i, s -> "${i + 1}. $s" }
+        val maneuvers = routeData?.maneuvers ?: return
+        if (maneuvers.isEmpty()) return
+        val hebrew = isHebrew
+        val text = maneuvers
+            .mapIndexed { i, m -> "${i + 1}. ${Instructions.localize(m, hebrew)}" }
             .joinToString("\n\n")
         AlertDialog.Builder(this)
             .setTitle(R.string.directions_title)
@@ -479,16 +519,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        announcedManeuverIdx = -1
+        announcedStage = 0
+        initTts()
+
         // First banner: the first real maneuver (index 0 is "depart")
         val first = route.maneuvers.getOrNull(1) ?: route.maneuvers.firstOrNull()
-        driveInstruction.text = first?.instruction ?: ""
+        driveInstruction.text = first?.let { Instructions.localize(it, isHebrew) } ?: ""
         driveDistance.text = ""
         val minutes = (route.timeSeconds / 60).toInt()
         driveRemaining.text = getString(R.string.remaining, route.distanceKm, minutes)
 
         try {
             val lm = getSystemService(LOCATION_SERVICE) as LocationManager
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, driveListener)
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, driveListener)
         } catch (e: Exception) {
             // GPS provider unavailable — banner still shows, camera still follows
         }
@@ -501,6 +545,7 @@ class MainActivity : AppCompatActivity() {
                 .removeUpdates(driveListener)
         }
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        tts?.stop()
         driveCard.visibility = View.GONE
         driveBottom.visibility = View.GONE
         topBar.visibility = View.VISIBLE
@@ -515,6 +560,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun onDriveLocation(loc: Location) {
         if (!driveMode) return
+        // Push the fix straight into the map so the blue arrow moves instantly
+        runCatching { map?.locationComponent?.forceLocationUpdate(loc) }
         val route = routeData ?: return
         val pts = route.points
         if (pts.size < 2 || cumDist.size != pts.size) return
@@ -556,15 +603,356 @@ class MainActivity : AppCompatActivity() {
         // Next maneuver
         val next = route.maneuvers.firstOrNull { it.beginIdx > bestIdx }
         if (next != null) {
-            driveInstruction.text = next.instruction
+            val hebrew = isHebrew
+            driveInstruction.text = Instructions.localize(next, hebrew)
             val metersToTurn = (cumDist[next.beginIdx] - cumDist[bestIdx]).coerceAtLeast(0.0)
             driveDistance.text = formatDistance(metersToTurn)
+
+            // Voice announcements: once ~400m out, once ~150m out
+            if (next.beginIdx != announcedManeuverIdx) {
+                announcedManeuverIdx = next.beginIdx
+                announcedStage = 0
+            }
+            if (announcedStage < 1 && metersToTurn in 160.0..470.0) {
+                announcedStage = 1
+                speak(Instructions.spoken(next, hebrew, metersToTurn))
+            } else if (announcedStage < 2 && metersToTurn < 160.0) {
+                announcedStage = 2
+                speak(Instructions.spoken(next, hebrew, null))
+            }
         }
 
         val remainingKm = remainingMeters / 1000.0
         val fraction = if (totalMeters > 0) remainingMeters / totalMeters else 0.0
         val remainingMin = (route.timeSeconds * fraction / 60).toInt()
         driveRemaining.text = getString(R.string.remaining, remainingKm, remainingMin)
+    }
+
+    // ---------- Company & line ----------
+
+    private fun onLineButton() {
+        if (activeLine == null) {
+            showCompanyDialog()
+            return
+        }
+        val items = arrayOf(
+            getString(R.string.line_stops_item),
+            getString(R.string.line_new_search),
+            getString(R.string.line_clear)
+        )
+        AlertDialog.Builder(this)
+            .setTitle("${activeLine?.shortName} · ${activeLine?.agency}")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showStopsList()
+                    1 -> showCompanyDialog()
+                    2 -> clearLine()
+                }
+            }
+            .show()
+    }
+
+    private fun showCompanyDialog() {
+        val labels = (listOf(getString(R.string.all_companies)) + companies).toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.choose_company)
+            .setItems(labels) { _, which ->
+                val company = if (which == 0) null else companies[which - 1]
+                askLineNumber(company)
+            }
+            .show()
+    }
+
+    private fun askLineNumber(company: String?) {
+        val input = EditText(this)
+        input.hint = "480"
+        input.maxLines = 1
+        AlertDialog.Builder(this)
+            .setTitle(company ?: getString(R.string.line_number_title))
+            .setMessage(R.string.line_number_title)
+            .setView(input)
+            .setPositiveButton(R.string.search) { _, _ ->
+                val number = input.text.toString().trim()
+                if (number.isNotEmpty()) searchLine(company, number)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun searchLine(company: String?, number: String) {
+        toast(getString(R.string.loading_line))
+        val today = LocalDate.now().toString()
+        executor.execute {
+            val all = try {
+                RouteClient.busLines(number, today)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                when {
+                    all == null -> toast(getString(R.string.network_error))
+                    all.isEmpty() -> toast(getString(R.string.no_lines_found))
+                    else -> {
+                        val filtered = if (company == null) all
+                        else all.filter { it.agency.contains(company) }.ifEmpty { all }
+                        showLineVariants(filtered)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showLineVariants(variants: List<BusLine>) {
+        val labels = variants.map {
+            val pretty = it.longName.replace("<->", " ↔ ").take(70)
+            "${it.shortName} · ${it.agency}\n$pretty"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.line_menu_title)
+            .setItems(labels) { _, which -> loadLine(variants[which]) }
+            .show()
+    }
+
+    private fun loadLine(line: BusLine) {
+        toast(getString(R.string.loading_line))
+        executor.execute {
+            val stops = try {
+                RouteClient.lineStops(line.routeId)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                when {
+                    stops == null -> toast(getString(R.string.network_error))
+                    stops.isEmpty() -> toast(getString(R.string.no_lines_found))
+                    else -> {
+                        activeLine = line
+                        activeStops = stops
+                        lineButton.text = "🚏 ${line.shortName}"
+                        drawLine(stops)
+                        toast(getString(R.string.stops_loaded, stops.size))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun drawLine(stops: List<LineStop>) {
+        val style = map?.style ?: return
+
+        val lineCoords = JSONArray()
+        stops.forEach { lineCoords.put(JSONArray().put(it.lon).put(it.lat)) }
+        val lineJson = JSONObject()
+            .put("type", "Feature")
+            .put("properties", JSONObject())
+            .put("geometry", JSONObject()
+                .put("type", "LineString")
+                .put("coordinates", lineCoords))
+            .toString()
+
+        val stopFeatures = JSONArray()
+        stops.forEach {
+            stopFeatures.put(
+                JSONObject()
+                    .put("type", "Feature")
+                    .put("properties", JSONObject())
+                    .put("geometry", JSONObject()
+                        .put("type", "Point")
+                        .put("coordinates", JSONArray().put(it.lon).put(it.lat)))
+            )
+        }
+        val stopsJson = JSONObject()
+            .put("type", "FeatureCollection")
+            .put("features", stopFeatures)
+            .toString()
+
+        val existingLine = style.getSourceAs<GeoJsonSource>(BUSLINE_SOURCE)
+        if (existingLine != null) {
+            existingLine.setGeoJson(lineJson)
+            style.getSourceAs<GeoJsonSource>(STOPS_SOURCE)?.setGeoJson(stopsJson)
+        } else {
+            style.addSource(GeoJsonSource(BUSLINE_SOURCE, lineJson))
+            style.addLayer(
+                LineLayer(BUSLINE_LAYER, BUSLINE_SOURCE).withProperties(
+                    PropertyFactory.lineColor("#7B1FA2"),
+                    PropertyFactory.lineWidth(3f),
+                    PropertyFactory.lineOpacity(0.7f),
+                    PropertyFactory.lineDasharray(arrayOf(2f, 1.5f))
+                )
+            )
+            style.addSource(GeoJsonSource(STOPS_SOURCE, stopsJson))
+            style.addLayer(
+                CircleLayer(STOPS_LAYER, STOPS_SOURCE).withProperties(
+                    PropertyFactory.circleRadius(5f),
+                    PropertyFactory.circleColor("#7B1FA2"),
+                    PropertyFactory.circleStrokeColor("#FFFFFF"),
+                    PropertyFactory.circleStrokeWidth(1.5f)
+                )
+            )
+        }
+
+        if (stops.size >= 2 && !driveMode) {
+            val b = LatLngBounds.Builder()
+            stops.forEach { b.include(LatLng(it.lat, it.lon)) }
+            map?.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), 100))
+        }
+    }
+
+    private fun clearLine() {
+        activeLine = null
+        activeStops = emptyList()
+        lineButton.text = "🚏"
+        map?.style?.let { style ->
+            style.removeLayer(STOPS_LAYER)
+            style.removeSource(STOPS_SOURCE)
+            style.removeLayer(BUSLINE_LAYER)
+            style.removeSource(BUSLINE_SOURCE)
+        }
+    }
+
+    private fun showStopsList() {
+        if (activeStops.isEmpty()) return
+        val labels = activeStops.mapIndexed { i, s ->
+            "${i + 1}. ${s.name} (${s.city})"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.line_stops_item)
+            .setItems(labels) { _, which ->
+                val s = activeStops[which]
+                requestRoute(GeocodeResult("${s.name} (${s.city})", s.lat, s.lon))
+            }
+            .show()
+    }
+
+    // ---------- Rest stops (coffee!) ----------
+
+    private fun findRestStops() {
+        val route = routeData ?: return
+        toast(getString(R.string.rest_search))
+        val pts = route.points
+        var minLat = 90.0; var maxLat = -90.0; var minLon = 180.0; var maxLon = -180.0
+        pts.forEach { (lat, lon) ->
+            if (lat < minLat) minLat = lat
+            if (lat > maxLat) maxLat = lat
+            if (lon < minLon) minLon = lon
+            if (lon > maxLon) maxLon = lon
+        }
+        val pad = 0.03
+        executor.execute {
+            val found = try {
+                RouteClient.restStops(minLat - pad, minLon - pad, maxLat + pad, maxLon + pad)
+            } catch (e: Exception) {
+                null
+            }
+            if (found == null) {
+                runOnUiThread { toast(getString(R.string.network_error)) }
+                return@execute
+            }
+            // Keep only stops near the route, ordered by distance along it
+            val step = (pts.size / 1500).coerceAtLeast(1)
+            val nearRoute = ArrayList<Pair<RestStop, Double>>() // stop, km along route
+            for (stop in found) {
+                var best = Double.MAX_VALUE
+                var bestIdx = 0
+                var i = 0
+                while (i < pts.size) {
+                    val d = fastDistanceMeters(stop.lat, stop.lon, pts[i].first, pts[i].second)
+                    if (d < best) { best = d; bestIdx = i }
+                    i += step
+                }
+                if (best <= 400) nearRoute.add(Pair(stop, cumDist[bestIdx] / 1000.0))
+            }
+            nearRoute.sortBy { it.second }
+            val top = nearRoute.take(25)
+            runOnUiThread { showRestStops(top) }
+        }
+    }
+
+    private fun showRestStops(stops: List<Pair<RestStop, Double>>) {
+        if (stops.isEmpty()) {
+            toast(getString(R.string.rest_none))
+            return
+        }
+        val style = map?.style
+        if (style != null) {
+            val features = JSONArray()
+            stops.forEach { (s, _) ->
+                features.put(
+                    JSONObject()
+                        .put("type", "Feature")
+                        .put("properties", JSONObject())
+                        .put("geometry", JSONObject()
+                            .put("type", "Point")
+                            .put("coordinates", JSONArray().put(s.lon).put(s.lat)))
+                )
+            }
+            val json = JSONObject()
+                .put("type", "FeatureCollection")
+                .put("features", features)
+                .toString()
+            val existing = style.getSourceAs<GeoJsonSource>(REST_SOURCE)
+            if (existing != null) {
+                existing.setGeoJson(json)
+            } else {
+                style.addSource(GeoJsonSource(REST_SOURCE, json))
+                style.addLayer(
+                    CircleLayer(REST_LAYER, REST_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(6f),
+                        PropertyFactory.circleColor("#FF8F00"),
+                        PropertyFactory.circleStrokeColor("#FFFFFF"),
+                        PropertyFactory.circleStrokeWidth(1.5f)
+                    )
+                )
+            }
+        }
+
+        val labels = stops.map { (s, km) ->
+            val kind = if (s.isFuel) "⛽" else "☕"
+            val name = s.name.ifEmpty {
+                getString(if (s.isFuel) R.string.fuel_station else R.string.rest_area)
+            }
+            "$kind $name · ${getString(R.string.at_km, km.toInt())}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.rest_title)
+            .setItems(labels) { _, which ->
+                val s = stops[which].first
+                map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(s.lat, s.lon), 15.0))
+            }
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    // ---------- Voice ----------
+
+    private fun initTts() {
+        if (tts != null) {
+            setTtsLanguage()
+            return
+        }
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                ttsReady = true
+                setTtsLanguage()
+            }
+        }
+    }
+
+    private fun setTtsLanguage() {
+        runCatching {
+            tts?.language = if (isHebrew) Locale.forLanguageTag("he-IL") else Locale.US
+        }
+    }
+
+    private fun speak(text: String) {
+        if (voiceMuted || !ttsReady) return
+        runCatching {
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "buswaze-turn")
+        }
+    }
+
+    private fun updateMuteButton() {
+        muteButton.text = if (voiceMuted) "🔇" else "🔊"
     }
 
     private fun buildCumulativeDistances(pts: List<Pair<Double, Double>>): DoubleArray {
@@ -620,7 +1008,14 @@ class MainActivity : AppCompatActivity() {
     private fun enableLocationComponent(style: Style) {
         val locationComponent = map?.locationComponent ?: return
         locationComponent.activateLocationComponent(
-            LocationComponentActivationOptions.builder(this, style).build()
+            LocationComponentActivationOptions.builder(this, style)
+                .locationEngineRequest(
+                    LocationEngineRequest.Builder(750L)
+                        .setFastestInterval(500L)
+                        .setPriority(LocationEngineRequest.PRIORITY_HIGH_ACCURACY)
+                        .build()
+                )
+                .build()
         )
         locationComponent.isLocationComponentEnabled = true
         locationComponent.cameraMode = CameraMode.TRACKING
@@ -668,6 +1063,12 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val ROUTE_SOURCE = "route-src"
         private const val ROUTE_LAYER = "route-layer"
+        private const val BUSLINE_SOURCE = "busline-src"
+        private const val BUSLINE_LAYER = "busline-layer"
+        private const val STOPS_SOURCE = "stops-src"
+        private const val STOPS_LAYER = "stops-layer"
+        private const val REST_SOURCE = "rest-src"
+        private const val REST_LAYER = "rest-layer"
     }
 
     // ---------- MapView lifecycle ----------
@@ -682,6 +1083,8 @@ class MainActivity : AppCompatActivity() {
             (getSystemService(LOCATION_SERVICE) as LocationManager)
                 .removeUpdates(driveListener)
         }
+        runCatching { tts?.shutdown() }
+        tts = null
         mapView.onDestroy()
         super.onDestroy()
     }

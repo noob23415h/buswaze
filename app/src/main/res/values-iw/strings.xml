@@ -35,4 +35,23 @@
     <string name="dist_km">%1$.1f ק״מ</string>
     <string name="fav_saved">נשמר במועדפים ⭐</string>
     <string name="fav_removed">הוסר מהמועדפים</string>
+
+    <string name="line_menu_title">קו אוטובוס</string>
+    <string name="line_stops_item">תחנות הקו</string>
+    <string name="line_new_search">חיפוש קו אחר</string>
+    <string name="line_clear">נקה קו</string>
+    <string name="choose_company">בחרו חברה</string>
+    <string name="all_companies">כל החברות</string>
+    <string name="line_number_title">מספר קו</string>
+    <string name="search">חפש</string>
+    <string name="loading_line">טוען קו…</string>
+    <string name="no_lines_found">הקו לא נמצא להיום</string>
+    <string name="stops_loaded">נטענו %1$d תחנות</string>
+
+    <string name="rest_search">מחפש עצירות רענון לאורך המסלול…</string>
+    <string name="rest_none">לא נמצאו עצירות רענון לאורך המסלול</string>
+    <string name="rest_title">עצירות רענון בדרך</string>
+    <string name="at_km">בק״מ %1$d</string>
+    <string name="fuel_station">תחנת דלק</string>
+    <string name="rest_area">חניון רענון</string>
 </resources>
