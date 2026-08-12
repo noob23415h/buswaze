@@ -106,11 +106,12 @@ class MainActivity : AppCompatActivity() {
 
     private var activeLine: BusLine? = null
     private var activeStops: List<LineStop> = emptyList()
+    private var cachedAgencies: List<String> = emptyList()
 
-    private val companies = listOf(
+    // Fallback if the live company list can't be fetched
+    private val fallbackCompanies = listOf(
         "אגד", "אגד תעבורה", "דן", "קווים", "מטרופולין", "סופרבוס",
-        "אפיקים", "אלקטרה אפיקים", "נתיב אקספרס", "תנופה", "מטרודן",
-        "גלים", "דן צפון", "דן דרום", "דן באר שבע"
+        "אלקטרה אפיקים", "נתיב אקספרס", "תנופה", "מטרודן", "גלים"
     )
 
     private val driveListener = LocationListener { loc -> onDriveLocation(loc) }
@@ -653,53 +654,175 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCompanyDialog() {
-        val labels = (listOf(getString(R.string.all_companies)) + companies).toTypedArray()
+        if (cachedAgencies.isNotEmpty()) {
+            showCompanyDialogWith(cachedAgencies)
+            return
+        }
+        executor.execute {
+            val live = try {
+                RouteClient.agencies(LocalDate.now().toString())
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                cachedAgencies = if (!live.isNullOrEmpty()) live else fallbackCompanies
+                showCompanyDialogWith(cachedAgencies)
+            }
+        }
+    }
+
+    private fun showCompanyDialogWith(agencies: List<String>) {
+        val labels = (listOf(getString(R.string.all_companies)) + agencies).toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(R.string.choose_company)
             .setItems(labels) { _, which ->
-                val company = if (which == 0) null else companies[which - 1]
+                val company = if (which == 0) null else agencies[which - 1]
                 askLineNumber(company)
             }
             .show()
     }
 
+    /**
+     * Line search with auto-guess: for a chosen company all its lines show
+     * immediately and filter as you type; for "all companies" it live-searches
+     * while typing.
+     */
     private fun askLineNumber(company: String?) {
+        val density = resources.displayMetrics.density
+        val container = android.widget.LinearLayout(this)
+        container.orientation = android.widget.LinearLayout.VERTICAL
+        val pad = (16 * density).toInt()
+        container.setPadding(pad, pad / 2, pad, 0)
+
         val input = EditText(this)
         input.hint = "480"
         input.maxLines = 1
-        AlertDialog.Builder(this)
-            .setTitle(company ?: getString(R.string.line_number_title))
-            .setMessage(R.string.line_number_title)
-            .setView(input)
-            .setPositiveButton(R.string.search) { _, _ ->
-                val number = input.text.toString().trim()
-                if (number.isNotEmpty()) searchLine(company, number)
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
+        val list = ListView(this)
+        container.addView(input)
+        container.addView(
+            list,
+            android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                (380 * density).toInt()
+            )
+        )
 
-    private fun searchLine(company: String?, number: String) {
-        toast(getString(R.string.loading_line))
-        val today = LocalDate.now().toString()
-        executor.execute {
-            val all = try {
-                RouteClient.busLines(number, today)
-            } catch (e: Exception) {
-                null
-            }
-            runOnUiThread {
-                when {
-                    all == null -> toast(getString(R.string.network_error))
-                    all.isEmpty() -> toast(getString(R.string.no_lines_found))
-                    else -> {
-                        val filtered = if (company == null) all
-                        else all.filter { it.agency.contains(company) }.ifEmpty { all }
-                        showLineVariants(filtered)
+        var rows: List<Pair<String, List<BusLine>>> = emptyList()
+        fun render(newRows: List<Pair<String, List<BusLine>>>) {
+            rows = newRows
+            list.adapter = ArrayAdapter(
+                this, android.R.layout.simple_list_item_1, newRows.map { it.first }
+            )
+        }
+        render(listOf(Pair(getString(R.string.loading_line), emptyList())))
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(company ?: getString(R.string.line_number_title))
+            .setView(container)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+
+        list.setOnItemClickListener { _, _, pos, _ ->
+            val row = rows.getOrNull(pos) ?: return@setOnItemClickListener
+            if (row.second.isEmpty()) return@setOnItemClickListener
+            dialog.dismiss()
+            if (row.second.size == 1) loadLine(row.second[0])
+            else showLineVariants(row.second)
+        }
+
+        val today = LocalDate.now()
+        var allGroups: List<Pair<String, List<BusLine>>> = emptyList()
+        var searchSeq = 0
+
+        fun groupLabel(number: String, variants: List<BusLine>): String {
+            val dest = variants.first().longName
+                .replace("<->", " ↔ ").take(45)
+            return "$number · $dest"
+        }
+
+        fun filterCompanyLines(text: String) {
+            if (allGroups.isEmpty()) return
+            val filtered =
+                if (text.isEmpty()) allGroups
+                else allGroups.filter { it.second.first().shortName.startsWith(text) } +
+                        allGroups.filter {
+                            !it.second.first().shortName.startsWith(text) &&
+                                    it.second.first().shortName.contains(text)
+                        }
+            render(filtered.take(80))
+        }
+
+        if (company != null) {
+            // Load the company's complete line list once, then filter locally
+            executor.execute {
+                val all = try {
+                    RouteClient.agencyLines(
+                        company, today.minusDays(1).toString(), today.toString()
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+                runOnUiThread {
+                    if (all.isNullOrEmpty()) {
+                        render(listOf(Pair(getString(R.string.no_lines_found), emptyList())))
+                    } else {
+                        allGroups = all.groupBy { it.shortName }
+                            .toList()
+                            .sortedWith(compareBy(
+                                { it.first.toIntOrNull() ?: Int.MAX_VALUE }, { it.first }
+                            ))
+                            .map { (n, v) -> Pair(groupLabel(n, v), v) }
+                        filterCompanyLines(input.text.toString().trim())
                     }
                 }
             }
+        } else {
+            render(emptyList())
         }
+
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val text = s?.toString()?.trim() ?: ""
+                if (company != null) {
+                    filterCompanyLines(text)
+                    return
+                }
+                // All companies: live search while typing (two-week window)
+                if (text.isEmpty()) {
+                    render(emptyList())
+                    return
+                }
+                val seq = ++searchSeq
+                handler.postDelayed({
+                    if (seq != searchSeq) return@postDelayed
+                    executor.execute {
+                        val found = try {
+                            RouteClient.busLines(
+                                text, today.minusDays(13).toString(), today.toString()
+                            )
+                        } catch (e: Exception) {
+                            null
+                        }
+                        runOnUiThread {
+                            if (seq != searchSeq) return@runOnUiThread
+                            when {
+                                found == null -> {}
+                                found.isEmpty() ->
+                                    render(listOf(Pair(getString(R.string.no_lines_found), emptyList())))
+                                else -> render(found.map { v ->
+                                    val pretty = v.longName.replace("<->", " ↔ ").take(40)
+                                    Pair("${v.shortName} · ${v.agency}\n$pretty", listOf(v))
+                                })
+                            }
+                        }
+                    }
+                }, 400)
+            }
+        })
+
+        dialog.show()
     }
 
     private fun showLineVariants(variants: List<BusLine>) {

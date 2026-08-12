@@ -14,7 +14,10 @@ data class BusLine(
     val shortName: String,
     val agency: String,
     val longName: String,
-    val direction: String
+    val direction: String,
+    val alternative: String,
+    val routeMkt: String,
+    val date: String
 )
 
 data class LineStop(
@@ -184,11 +187,19 @@ object RouteClient {
 
     private const val STRIDE = "https://open-bus-stride-api.hasadna.org.il"
 
-    /** All route variants matching a line number today (all companies). */
-    fun busLines(lineNumber: String, date: String): List<BusLine> {
-        val q = URLEncoder.encode(lineNumber, "UTF-8")
-        val url = "$STRIDE/gtfs_routes/list?limit=30&date_from=$date&date_to=$date&route_short_name=$q"
+    /** Bus companies operating on the given date. */
+    fun agencies(date: String): List<String> {
+        val url = "$STRIDE/gtfs_agencies/list?date_from=$date&date_to=$date"
         val arr = JSONArray(httpGet(url))
+        val out = LinkedHashSet<String>()
+        for (i in 0 until arr.length()) {
+            val name = arr.getJSONObject(i).optString("agency_name")
+            if (name.isNotEmpty()) out.add(name)
+        }
+        return out.toList().sorted()
+    }
+
+    private fun parseLines(arr: JSONArray): List<BusLine> {
         val out = ArrayList<BusLine>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
@@ -198,11 +209,36 @@ object RouteClient {
                     shortName = o.optString("route_short_name"),
                     agency = o.optString("agency_name"),
                     longName = o.optString("route_long_name"),
-                    direction = o.optString("route_direction")
+                    direction = o.optString("route_direction"),
+                    alternative = o.optString("route_alternative"),
+                    routeMkt = o.optString("route_mkt"),
+                    date = o.optString("date")
                 )
             )
         }
         return out
+    }
+
+    /** Keep one entry per real-world variant (latest date wins). */
+    private fun dedupeVariants(lines: List<BusLine>): List<BusLine> =
+        lines.groupBy { Triple(it.routeMkt, it.direction, it.alternative) }
+            .map { (_, group) -> group.maxBy { it.date } }
+
+    /**
+     * All route variants matching a line number, searched over a date range so
+     * lines that don't happen to run on a given day are still found.
+     */
+    fun busLines(lineNumber: String, dateFrom: String, dateTo: String): List<BusLine> {
+        val q = URLEncoder.encode(lineNumber, "UTF-8")
+        val url = "$STRIDE/gtfs_routes/list?limit=300&date_from=$dateFrom&date_to=$dateTo&route_short_name=$q"
+        return dedupeVariants(parseLines(JSONArray(httpGet(url))))
+    }
+
+    /** Every route variant a company operates (searched over a date range). */
+    fun agencyLines(agency: String, dateFrom: String, dateTo: String): List<BusLine> {
+        val a = URLEncoder.encode(agency, "UTF-8")
+        val url = "$STRIDE/gtfs_routes/list?limit=8000&date_from=$dateFrom&date_to=$dateTo&agency_name=$a"
+        return dedupeVariants(parseLines(JSONArray(httpGet(url))))
     }
 
     /** Ordered stops of a line variant (via one of today's rides). */

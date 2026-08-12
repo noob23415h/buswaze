@@ -45,7 +45,8 @@
     <string name="line_number_title">Line number</string>
     <string name="search">Search</string>
     <string name="loading_line">Loading line…</string>
-    <string name="no_lines_found">Line not found for today</string>
+    <string name="no_lines_found">Line not found — check the number</string>
+    <string name="all_lines">All lines</string>
     <string name="stops_loaded">Loaded %1$d stops</string>
 
     <string name="rest_search">Looking for rest stops along the route…</string>

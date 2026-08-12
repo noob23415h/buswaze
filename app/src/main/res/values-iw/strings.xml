@@ -45,7 +45,8 @@
     <string name="line_number_title">מספר קו</string>
     <string name="search">חפש</string>
     <string name="loading_line">טוען קו…</string>
-    <string name="no_lines_found">הקו לא נמצא להיום</string>
+    <string name="no_lines_found">הקו לא נמצא — בדקו את המספר</string>
+    <string name="all_lines">כל הקווים</string>
     <string name="stops_loaded">נטענו %1$d תחנות</string>
 
     <string name="rest_search">מחפש עצירות רענון לאורך המסלול…</string>
